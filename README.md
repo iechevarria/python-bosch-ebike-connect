@@ -249,10 +249,17 @@ cd python-bosch-ebike-connect
 uv sync
 ```
 
-### Running Tests
+### Testing
 
+**Important**: The Bosch eBike Connect API blocks requests from cloud/datacenter IPs and proxied connections. Testing must be done from a local machine with a residential internet connection.
+
+See [TESTING.md](TESTING.md) for detailed testing instructions.
+
+Quick test:
 ```bash
-uv run pytest
+export EBIKE_USERNAME="your_email@example.com"
+export EBIKE_PASSWORD="your_password"
+uv run examples/basic_usage.py
 ```
 
 ## API Endpoints Implemented

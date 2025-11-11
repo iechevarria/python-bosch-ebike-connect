@@ -30,7 +30,7 @@ class BoschEBikeClient:
         """Initialize the client."""
         self._client = httpx.Client(
             headers={
-                "User-Agent": "python-bosch-ebike-connect",
+                "User-Agent": "Mozilla/5.0 (compatible; python-bosch-ebike-connect)",
                 "Protect-from": "CSRF",
             },
             follow_redirects=True,
