@@ -129,8 +129,10 @@ Get detailed information about a specific ride.
 ```python
 ride = client.get_ride_details("ride_id_here")
 print(f"Distance: {ride.distance / 1000:.2f} km")
+print(f"Duration: {ride.driving_time // 60000} minutes")
 print(f"Average speed: {ride.avg_speed:.1f} km/h")
-print(f"Calories: {ride.calories}")
+if ride.calories:
+    print(f"Calories: {ride.calories:.0f}")
 ```
 
 ### Trips
@@ -148,7 +150,8 @@ Get detailed information about a specific trip.
 ```python
 trip = client.get_trip_details("trip_id_here")
 print(f"Trip: {trip.name}")
-print(f"Duration: {trip.driving_time // 60} minutes")
+print(f"Duration: {trip.driving_time // 60000} minutes")
+print(f"Distance: {trip.distance / 1000:.2f} km")
 if trip.rides:
     print(f"Number of rides: {len(trip.rides)}")
 ```
@@ -158,29 +161,29 @@ if trip.rides:
 ### `EBike`
 
 Represents an eBike device with the following attributes:
-- `id`: Unique identifier
-- `name`: eBike name
-- `vin`: Vehicle identification number (optional)
-- `drive_unit`: Drive unit information (optional)
-- `battery_unit`: Battery unit information (optional)
-- `bui`: Battery information unit data (optional)
-- `assistance_level`: Custom assistance level configuration (optional)
+- `id`: Unique identifier (typically the drive unit serial number)
+- `name`: eBike name (from drive unit device_name)
+- `vin`: Vehicle identification number (optional, may not be present in API response)
+- `drive_unit`: Drive unit information as dictionary (optional)
+- `battery_unit`: Battery unit information as dictionary (optional)
+- `bui`: Battery information unit data as dictionary (optional)
+- `assistance_level`: Custom assistance level configuration as dictionary (optional)
 
 ### `RideDetails`
 
 Detailed ride information with attributes:
 - `id`: Ride identifier
 - `name`: Ride name
-- `start_time`: Start timestamp
-- `end_time`: End timestamp
-- `driving_time`: Duration in seconds
-- `distance`: Distance in meters
-- `avg_speed`: Average speed in km/h (optional)
-- `max_speed`: Maximum speed in km/h (optional)
-- `avg_cadence`: Average cadence in RPM (optional)
-- `calories`: Calories burned (optional)
-- `altitude_up`: Altitude gained in meters (optional)
-- `altitude_down`: Altitude descended in meters (optional)
+- `start_time`: Start timestamp (datetime)
+- `end_time`: End timestamp (datetime)
+- `driving_time`: Duration in milliseconds (int)
+- `distance`: Distance in meters (float)
+- `avg_speed`: Average speed in km/h (float, optional)
+- `max_speed`: Maximum speed in km/h (float, optional)
+- `avg_cadence`: Average cadence in RPM (float, optional)
+- `calories`: Calories burned (float, optional)
+- `altitude_up`: Altitude gained in meters (float, optional)
+- `altitude_down`: Altitude descended in meters (float, optional)
 - `segments`: Ride segments data (optional)
 
 ### `TripDetails`
@@ -188,10 +191,10 @@ Detailed ride information with attributes:
 Trip information with attributes:
 - `id`: Trip identifier
 - `name`: Trip name
-- `start_time`: Start timestamp
-- `end_time`: End timestamp
-- `driving_time`: Duration in seconds
-- `distance`: Distance in meters
+- `start_time`: Start timestamp (datetime)
+- `end_time`: End timestamp (datetime)
+- `driving_time`: Duration in milliseconds (int)
+- `distance`: Distance in meters (float)
 - `rides`: List of `RideDetails` objects (optional)
 
 ## Error Handling
