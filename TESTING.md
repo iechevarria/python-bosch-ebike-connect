@@ -107,6 +107,19 @@ httpx_logger = logging.getLogger("httpx")
 httpx_logger.setLevel(logging.DEBUG)
 ```
 
+## Testing Status
+
+✅ **Successfully tested with real Bosch eBike Connect account** (November 2025)
+- Authentication working correctly
+- eBike data retrieval (Riese & Müller Packster 70 with Performance Line CX)
+- Activity/trip listing and details
+- Ride details including speed, cadence, altitude data
+
+**Note:** The client has been updated to handle the actual API response format, which differs from some initial assumptions:
+- Timestamps are in milliseconds (Unix epoch × 1000)
+- Numeric values may be returned as strings and are automatically converted
+- eBike data structure includes arrays for batteries and BUIs
+
 ## Contributing Test Results
 
 If you successfully test the client, please consider:

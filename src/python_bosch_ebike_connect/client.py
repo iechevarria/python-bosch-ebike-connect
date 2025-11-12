@@ -122,23 +122,32 @@ class BoschEBikeClient:
         self._ensure_authenticated()
         data = self._request_json("GET", f"{self.API_BASE}/portal/devices/my_ebikes")
 
+        # The API returns a dict with "my_ebikes" key containing the list
+        ebike_list = data.get("my_ebikes", []) if isinstance(data, dict) else data
+
         ebikes = []
-        for item in data:
-            ebike_data = item.get("ebike", {})
+        for ebike_data in ebike_list:
             drive_unit = ebike_data.get("drive_unit")
-            battery_unit = ebike_data.get("battery_unit")
-            bui = ebike_data.get("bui")
-            assistance = ebike_data.get("assistance_level")
+            batteries = ebike_data.get("batteries", [])
+            battery_unit = batteries[0] if batteries else None
+            buis = ebike_data.get("buis", [])
+            bui = buis[0] if buis else None
+
+            # Extract a name from drive_unit device_name if available
+            name = drive_unit.get("device_name", "eBike") if drive_unit else "eBike"
+
+            # Use the drive unit serial as ID if available
+            ebike_id = drive_unit.get("serial", "") if drive_unit else ""
 
             ebikes.append(
                 EBike(
-                    id=ebike_data.get("id", ""),
-                    name=ebike_data.get("name", ""),
-                    vin=ebike_data.get("vin"),
+                    id=ebike_id,
+                    name=name,
+                    vin=None,  # VIN not present in this API response structure
                     drive_unit=self._parse_dict(drive_unit) if drive_unit else None,
                     battery_unit=self._parse_dict(battery_unit) if battery_unit else None,
                     bui=self._parse_dict(bui) if bui else None,
-                    assistance_level=self._parse_dict(assistance) if assistance else None,
+                    assistance_level=None,  # Not directly available in response
                 )
             )
 
@@ -202,14 +211,14 @@ class BoschEBikeClient:
             name=data.get("name", ""),
             start_time=self._parse_datetime(data.get("start_time")),
             end_time=self._parse_datetime(data.get("end_time")),
-            driving_time=data.get("driving_time", 0),
-            distance=data.get("distance", 0),
-            avg_speed=data.get("avg_speed"),
-            max_speed=data.get("max_speed"),
-            avg_cadence=data.get("avg_cadence"),
-            calories=data.get("calories"),
-            altitude_up=data.get("altitude_up"),
-            altitude_down=data.get("altitude_down"),
+            driving_time=self._parse_int(data.get("driving_time"), 0),
+            distance=self._parse_float(data.get("distance"), 0.0),
+            avg_speed=self._parse_float(data.get("avg_speed")),
+            max_speed=self._parse_float(data.get("max_speed")),
+            avg_cadence=self._parse_float(data.get("avg_cadence")),
+            calories=self._parse_float(data.get("calories")),
+            altitude_up=self._parse_float(data.get("altitude_up")),
+            altitude_down=self._parse_float(data.get("altitude_down")),
             segments=data.get("segments"),
         )
 
@@ -241,14 +250,14 @@ class BoschEBikeClient:
                         name=ride_data.get("name", ""),
                         start_time=self._parse_datetime(ride_data.get("start_time")),
                         end_time=self._parse_datetime(ride_data.get("end_time")),
-                        driving_time=ride_data.get("driving_time", 0),
-                        distance=ride_data.get("distance", 0),
-                        avg_speed=ride_data.get("avg_speed"),
-                        max_speed=ride_data.get("max_speed"),
-                        avg_cadence=ride_data.get("avg_cadence"),
-                        calories=ride_data.get("calories"),
-                        altitude_up=ride_data.get("altitude_up"),
-                        altitude_down=ride_data.get("altitude_down"),
+                        driving_time=self._parse_int(ride_data.get("driving_time"), 0),
+                        distance=self._parse_float(ride_data.get("distance"), 0.0),
+                        avg_speed=self._parse_float(ride_data.get("avg_speed")),
+                        max_speed=self._parse_float(ride_data.get("max_speed")),
+                        avg_cadence=self._parse_float(ride_data.get("avg_cadence")),
+                        calories=self._parse_float(ride_data.get("calories")),
+                        altitude_up=self._parse_float(ride_data.get("altitude_up")),
+                        altitude_down=self._parse_float(ride_data.get("altitude_down")),
                         segments=ride_data.get("segments"),
                     )
                 )
@@ -258,8 +267,8 @@ class BoschEBikeClient:
             name=data.get("name", ""),
             start_time=self._parse_datetime(data.get("start_time")),
             end_time=self._parse_datetime(data.get("end_time")),
-            driving_time=data.get("driving_time", 0),
-            distance=data.get("distance", 0),
+            driving_time=self._parse_int(data.get("driving_time"), 0),
+            distance=self._parse_float(data.get("distance"), 0.0),
             rides=rides if rides else None,
         )
 
@@ -331,11 +340,11 @@ class BoschEBikeClient:
             raise EBikeConnectError("Not authenticated. Please call login() first.")
 
     @staticmethod
-    def _parse_datetime(dt_str: str | None) -> datetime:
-        """Parse datetime string.
+    def _parse_datetime(dt_str: str | int | None) -> datetime:
+        """Parse datetime string or timestamp.
 
         Args:
-            dt_str: Datetime string in ISO format
+            dt_str: Datetime string in ISO format or timestamp in milliseconds
 
         Returns:
             Parsed datetime object
@@ -343,22 +352,33 @@ class BoschEBikeClient:
         if not dt_str:
             return datetime.now()
 
-        # Try parsing with common formats
-        for fmt in [
-            "%Y-%m-%dT%H:%M:%S.%fZ",
-            "%Y-%m-%dT%H:%M:%SZ",
-            "%Y-%m-%dT%H:%M:%S",
-        ]:
+        # If it's a timestamp (int or numeric string), convert from milliseconds
+        if isinstance(dt_str, int) or (isinstance(dt_str, str) and dt_str.isdigit()):
             try:
-                return datetime.strptime(dt_str, fmt)
-            except ValueError:
-                continue
+                timestamp_ms = int(dt_str)
+                return datetime.fromtimestamp(timestamp_ms / 1000)
+            except (ValueError, OSError):
+                pass
 
-        # Fallback to fromisoformat
-        try:
-            return datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
-        except (ValueError, AttributeError):
-            return datetime.now()
+        # If it's a string, try parsing with common formats
+        if isinstance(dt_str, str):
+            for fmt in [
+                "%Y-%m-%dT%H:%M:%S.%fZ",
+                "%Y-%m-%dT%H:%M:%SZ",
+                "%Y-%m-%dT%H:%M:%S",
+            ]:
+                try:
+                    return datetime.strptime(dt_str, fmt)
+                except ValueError:
+                    continue
+
+            # Fallback to fromisoformat
+            try:
+                return datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+            except (ValueError, AttributeError):
+                pass
+
+        return datetime.now()
 
     @staticmethod
     def _parse_dict(data: dict[str, Any]) -> dict[str, Any]:
@@ -371,3 +391,43 @@ class BoschEBikeClient:
             Parsed dictionary
         """
         return data
+
+    @staticmethod
+    def _parse_int(value: Any, default: int = 0) -> int:
+        """Parse integer value that might be a string.
+
+        Args:
+            value: Value to parse (can be str, int, or None)
+            default: Default value if parsing fails
+
+        Returns:
+            Parsed integer value
+        """
+        if value is None:
+            return default
+        if isinstance(value, int):
+            return value
+        try:
+            return int(value)
+        except (ValueError, TypeError):
+            return default
+
+    @staticmethod
+    def _parse_float(value: Any, default: float | None = None) -> float | None:
+        """Parse float value that might be a string.
+
+        Args:
+            value: Value to parse (can be str, float, or None)
+            default: Default value if parsing fails
+
+        Returns:
+            Parsed float value or None
+        """
+        if value is None:
+            return default
+        if isinstance(value, (int, float)):
+            return float(value)
+        try:
+            return float(value)
+        except (ValueError, TypeError):
+            return default

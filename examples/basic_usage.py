@@ -56,7 +56,7 @@ def main() -> None:
             if trip_id:
                 trip = client.get_trip_details(trip_id)
                 print(f"    Start: {trip.start_time}")
-                print(f"    Duration: {trip.driving_time // 60} minutes")
+                print(f"    Duration: {trip.driving_time // 60000} minutes")
                 if trip.rides:
                     print(f"    Number of rides: {len(trip.rides)}")
 
@@ -77,7 +77,7 @@ def main() -> None:
                     if ride.max_speed:
                         print(f"  Max speed: {ride.max_speed:.1f} km/h")
                     if ride.calories:
-                        print(f"  Calories: {ride.calories}")
+                        print(f"  Calories: {ride.calories:.0f}")
                     if ride.altitude_up:
                         print(f"  Altitude gain: {ride.altitude_up} m")
 
