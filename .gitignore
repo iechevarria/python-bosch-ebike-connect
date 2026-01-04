@@ -50,3 +50,8 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
+
+# Heatmap cache and output
+.ride_cache/
+heatmap*.html
+dashboard.html
