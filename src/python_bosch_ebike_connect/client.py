@@ -41,7 +41,7 @@ class BoschEBikeClient:
         """Context manager entry."""
         return self
 
-    def __exit__(self, *args: Any) -> None:
+    def __exit__(self, *_: object) -> None:
         """Context manager exit."""
         self.close()
 
@@ -96,7 +96,11 @@ class BoschEBikeClient:
             APIError: If the API request fails
         """
         response = self._request("GET", f"{self.BASE_URL}/versionNumber.txt")
-        return response.text.strip()
+        try:
+            data = response.json()
+            return data.get("version", response.text.strip())
+        except Exception:
+            return response.text.strip()
 
     def get_api_version(self) -> dict[str, Any]:
         """Get the API version information.
@@ -144,9 +148,9 @@ class BoschEBikeClient:
                     id=ebike_id,
                     name=name,
                     vin=None,  # VIN not present in this API response structure
-                    drive_unit=self._parse_dict(drive_unit) if drive_unit else None,
-                    battery_unit=self._parse_dict(battery_unit) if battery_unit else None,
-                    bui=self._parse_dict(bui) if bui else None,
+                    drive_unit=drive_unit,
+                    battery_unit=battery_unit,
+                    bui=bui,
                     assistance_level=None,  # Not directly available in response
                 )
             )
@@ -187,6 +191,63 @@ class BoschEBikeClient:
             params=params,
         )
 
+    def get_ride_coordinates(self, ride_id: str) -> list[tuple[float, float]]:
+        """Get GPS coordinates for a specific ride.
+
+        Args:
+            ride_id: The ride identifier
+
+        Returns:
+            List of (latitude, longitude) tuples for the ride track.
+            Points with missing GPS data are filtered out.
+
+        Raises:
+            APIError: If the API request fails
+            EBikeConnectError: If not authenticated
+        """
+        self._ensure_authenticated()
+        data = self._request_json(
+            "GET",
+            f"{self.API_BASE}/activities/ride/details/{ride_id}",
+        )
+
+        coords = []
+        for segment in data.get("coordinates", []):
+            for point in segment:
+                if point and point[0] is not None and point[1] is not None:
+                    coords.append((float(point[0]), float(point[1])))
+        return coords
+
+    def get_all_coordinates(
+        self,
+        max_activities: int = 100,
+    ) -> list[tuple[float, float]]:
+        """Get GPS coordinates from all rides across multiple activities.
+
+        Convenience method for building heatmaps or analyzing ride patterns.
+
+        Args:
+            max_activities: Maximum number of activities to fetch (default: 100)
+
+        Returns:
+            List of (latitude, longitude) tuples from all rides.
+
+        Raises:
+            APIError: If the API request fails
+            EBikeConnectError: If not authenticated
+        """
+        self._ensure_authenticated()
+        activities = self.get_activity_headers(max_results=max_activities)
+
+        all_coords = []
+        for activity in activities:
+            for ride in activity.get("ride_headers", []):
+                ride_id = ride.get("id")
+                if ride_id:
+                    coords = self.get_ride_coordinates(ride_id)
+                    all_coords.extend(coords)
+        return all_coords
+
     def get_ride_details(self, ride_id: str) -> RideDetails:
         """Get detailed information about a specific ride.
 
@@ -208,11 +269,11 @@ class BoschEBikeClient:
 
         return RideDetails(
             id=data.get("id", ""),
-            name=data.get("name", ""),
+            name=data.get("title", ""),
             start_time=self._parse_datetime(data.get("start_time")),
             end_time=self._parse_datetime(data.get("end_time")),
             driving_time=self._parse_int(data.get("driving_time"), 0),
-            distance=self._parse_float(data.get("distance"), 0.0),
+            distance=self._parse_float(data.get("total_distance"), 0.0),
             avg_speed=self._parse_float(data.get("avg_speed")),
             max_speed=self._parse_float(data.get("max_speed")),
             avg_cadence=self._parse_float(data.get("avg_cadence")),
@@ -241,35 +302,16 @@ class BoschEBikeClient:
             f"{self.API_BASE}/activities/trip/details/{trip_id}",
         )
 
-        rides = []
-        if "rides" in data:
-            for ride_data in data["rides"]:
-                rides.append(
-                    RideDetails(
-                        id=ride_data.get("id", ""),
-                        name=ride_data.get("name", ""),
-                        start_time=self._parse_datetime(ride_data.get("start_time")),
-                        end_time=self._parse_datetime(ride_data.get("end_time")),
-                        driving_time=self._parse_int(ride_data.get("driving_time"), 0),
-                        distance=self._parse_float(ride_data.get("distance"), 0.0),
-                        avg_speed=self._parse_float(ride_data.get("avg_speed")),
-                        max_speed=self._parse_float(ride_data.get("max_speed")),
-                        avg_cadence=self._parse_float(ride_data.get("avg_cadence")),
-                        calories=self._parse_float(ride_data.get("calories")),
-                        altitude_up=self._parse_float(ride_data.get("altitude_up")),
-                        altitude_down=self._parse_float(ride_data.get("altitude_down")),
-                        segments=ride_data.get("segments"),
-                    )
-                )
-
+        # Note: The trip details API doesn't include nested rides.
+        # Rides are available as 'ride_headers' in get_activity_headers() response.
         return TripDetails(
             id=data.get("id", ""),
-            name=data.get("name", ""),
+            name=data.get("title", ""),
             start_time=self._parse_datetime(data.get("start_time")),
             end_time=self._parse_datetime(data.get("end_time")),
             driving_time=self._parse_int(data.get("driving_time"), 0),
-            distance=self._parse_float(data.get("distance"), 0.0),
-            rides=rides if rides else None,
+            distance=self._parse_float(data.get("total_distance"), 0.0),
+            rides=None,
         )
 
     def _request(
@@ -379,18 +421,6 @@ class BoschEBikeClient:
                 pass
 
         return datetime.now()
-
-    @staticmethod
-    def _parse_dict(data: dict[str, Any]) -> dict[str, Any]:
-        """Parse dictionary data (helper for nested objects).
-
-        Args:
-            data: Dictionary to parse
-
-        Returns:
-            Parsed dictionary
-        """
-        return data
 
     @staticmethod
     def _parse_int(value: Any, default: int = 0) -> int:

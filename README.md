@@ -41,7 +41,7 @@ with BoschEBikeClient() as client:
     # Get recent activities
     activities = client.get_activity_headers(max_results=10)
     for activity in activities:
-        print(f"Trip: {activity.get('name')}")
+        print(f"Trip: {activity.get('title')}")
 ```
 
 ## API Reference
@@ -92,7 +92,7 @@ for ebike in ebikes:
     print(f"Name: {ebike.name}")
     print(f"VIN: {ebike.vin}")
     if ebike.drive_unit:
-        print(f"Drive Unit: {ebike.drive_unit.get('name')}")
+        print(f"Drive Unit: {ebike.drive_unit.get('product_line_name')}")
 ```
 
 ### Activities
@@ -111,7 +111,49 @@ Get activity headers (list of trips/rides).
 ```python
 activities = client.get_activity_headers(max_results=5)
 for activity in activities:
-    print(f"{activity.get('name')}: {activity.get('distance') / 1000:.2f} km")
+    print(f"{activity.get('title')}: {activity.get('total_distance') / 1000:.2f} km")
+```
+
+### Coordinates
+
+#### `get_ride_coordinates(ride_id: str) -> list[tuple[float, float]]`
+
+Get GPS coordinates for a specific ride.
+
+**Parameters:**
+- `ride_id`: The ride identifier
+
+**Returns:** List of `(latitude, longitude)` tuples. Points with missing GPS data are filtered out.
+
+**Example:**
+```python
+coords = client.get_ride_coordinates("ride_id_here")
+for lat, lng in coords[:5]:
+    print(f"  {lat}, {lng}")
+```
+
+#### `get_all_coordinates(max_activities: int = 100) -> list[tuple[float, float]]`
+
+Get GPS coordinates from all rides across multiple activities. Useful for building heatmaps.
+
+**Parameters:**
+- `max_activities`: Maximum number of activities to fetch (default: 100)
+
+**Returns:** List of `(latitude, longitude)` tuples from all rides.
+
+**Example:**
+```python
+# Get all coordinates for a heatmap
+coords = client.get_all_coordinates(max_activities=50)
+print(f"Total points: {len(coords)}")
+
+# Use with folium for a heatmap
+from folium.plugins import HeatMap
+import folium
+
+m = folium.Map(location=[coords[0][0], coords[0][1]], zoom_start=12)
+HeatMap(coords).add_to(m)
+m.save("heatmap.html")
 ```
 
 ### Rides
@@ -144,7 +186,7 @@ Get detailed information about a specific trip.
 **Parameters:**
 - `trip_id`: The trip identifier
 
-**Returns:** `TripDetails` object with complete trip information including nested rides
+**Returns:** `TripDetails` object with trip information
 
 **Example:**
 ```python
@@ -152,8 +194,6 @@ trip = client.get_trip_details("trip_id_here")
 print(f"Trip: {trip.name}")
 print(f"Duration: {trip.driving_time // 60000} minutes")
 print(f"Distance: {trip.distance / 1000:.2f} km")
-if trip.rides:
-    print(f"Number of rides: {len(trip.rides)}")
 ```
 
 ## Data Types
@@ -190,12 +230,12 @@ Detailed ride information with attributes:
 
 Trip information with attributes:
 - `id`: Trip identifier
-- `name`: Trip name
+- `name`: Trip name (may be empty for unnamed trips)
 - `start_time`: Start timestamp (datetime)
 - `end_time`: End timestamp (datetime)
 - `driving_time`: Duration in milliseconds (int)
 - `distance`: Distance in meters (float)
-- `rides`: List of `RideDetails` objects (optional)
+- `rides`: Always None (ride information is available via `ride_headers` in activity headers)
 
 ## Error Handling
 
@@ -272,7 +312,7 @@ This library implements all endpoints from the referenced projects:
 ### From ebike-dl
 -  POST `/ebikeconnect/api/portal/login/public` - Authentication
 -  GET `/ebikeconnect/api/portal/activities/trip/headers` - Activity list
--  GET `/ebikeconnect/api/activities/ride/details/{id}` - Ride details
+-  GET `/ebikeconnect/api/activities/ride/details/{id}` - Ride details + GPS coordinates
 
 ### From ebike-connect-js
 -  GET `/versionNumber.txt` - Service version

@@ -1,7 +1,6 @@
 """Example usage of the Bosch eBike Connect client."""
 
 import os
-from datetime import datetime
 
 from python_bosch_ebike_connect import BoschEBikeClient
 
@@ -39,17 +38,17 @@ def main() -> None:
             if ebike.vin:
                 print(f"    VIN: {ebike.vin}")
             if ebike.drive_unit:
-                print(f"    Drive Unit: {ebike.drive_unit.get('name', 'Unknown')}")
+                print(f"    Drive Unit: {ebike.drive_unit.get('product_line_name', 'Unknown')}")
             if ebike.battery_unit:
-                print(f"    Battery: {ebike.battery_unit.get('name', 'Unknown')}")
+                print(f"    Battery: {ebike.battery_unit.get('device_name', 'Unknown')}")
 
         # Get recent activities
         print("\nRecent Activities:")
         activities = client.get_activity_headers(max_results=5)
         for activity in activities:
             trip_id = activity.get("id", "")
-            name = activity.get("name", "Unnamed")
-            distance = activity.get("distance", 0) / 1000  # Convert to km
+            name = activity.get("title", "Unnamed")
+            distance = activity.get("total_distance", 0) / 1000  # Convert to km
             print(f"  - {name}: {distance:.2f} km (ID: {trip_id})")
 
             # Get detailed trip information
@@ -57,16 +56,17 @@ def main() -> None:
                 trip = client.get_trip_details(trip_id)
                 print(f"    Start: {trip.start_time}")
                 print(f"    Duration: {trip.driving_time // 60000} minutes")
-                if trip.rides:
-                    print(f"    Number of rides: {len(trip.rides)}")
+                ride_headers = activity.get("ride_headers", [])
+                if ride_headers:
+                    print(f"    Number of rides: {len(ride_headers)}")
 
         # Get detailed ride information (if any activities exist)
         if activities:
             # Get the first ride from the most recent trip
             first_trip = activities[0]
-            rides = first_trip.get("rides", [])
-            if rides:
-                first_ride_id = rides[0].get("id")
+            ride_headers = first_trip.get("ride_headers", [])
+            if ride_headers:
+                first_ride_id = ride_headers[0].get("id")
                 if first_ride_id:
                     print(f"\nDetailed Ride Information (ID: {first_ride_id}):")
                     ride = client.get_ride_details(first_ride_id)
