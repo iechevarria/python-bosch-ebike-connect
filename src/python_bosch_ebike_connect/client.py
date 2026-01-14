@@ -125,37 +125,23 @@ class BoschEBikeClient:
         """
         self._ensure_authenticated()
         data = self._request_json("GET", f"{self.API_BASE}/portal/devices/my_ebikes")
-
-        # The API returns a dict with "my_ebikes" key containing the list
         ebike_list = data.get("my_ebikes", []) if isinstance(data, dict) else data
 
-        ebikes = []
-        for ebike_data in ebike_list:
-            drive_unit = ebike_data.get("drive_unit")
-            batteries = ebike_data.get("batteries", [])
-            battery_unit = batteries[0] if batteries else None
-            buis = ebike_data.get("buis", [])
-            bui = buis[0] if buis else None
+        def _first_or_none(items: list) -> dict | None:
+            return items[0] if items else None
 
-            # Extract a name from drive_unit device_name if available
-            name = drive_unit.get("device_name", "eBike") if drive_unit else "eBike"
-
-            # Use the drive unit serial as ID if available
-            ebike_id = drive_unit.get("serial", "") if drive_unit else ""
-
-            ebikes.append(
-                EBike(
-                    id=ebike_id,
-                    name=name,
-                    vin=None,  # VIN not present in this API response structure
-                    drive_unit=drive_unit,
-                    battery_unit=battery_unit,
-                    bui=bui,
-                    assistance_level=None,  # Not directly available in response
-                )
+        return [
+            EBike(
+                id=(d := e.get("drive_unit")) and d.get("serial", "") or "",
+                name=d.get("device_name", "eBike") if d else "eBike",
+                vin=None,
+                drive_unit=d,
+                battery_unit=_first_or_none(e.get("batteries", [])),
+                bui=_first_or_none(e.get("buis", [])),
+                assistance_level=None,
             )
-
-        return ebikes
+            for e in ebike_list
+        ]
 
     def get_activity_headers(
         self,
@@ -176,19 +162,13 @@ class BoschEBikeClient:
             EBikeConnectError: If not authenticated
         """
         self._ensure_authenticated()
-
-        if offset is None:
-            offset = int(datetime.now().timestamp() * 1000)
-
-        params = {
-            "max": max_results,
-            "offset": offset,
-        }
-
         return self._request_json(
             "GET",
             f"{self.API_BASE}/portal/activities/trip/headers",
-            params=params,
+            params={
+                "max": max_results,
+                "offset": offset or int(datetime.now().timestamp() * 1000),
+            },
         )
 
     def get_ride_coordinates(self, ride_id: str) -> list[tuple[float, float]]:
@@ -210,13 +190,12 @@ class BoschEBikeClient:
             "GET",
             f"{self.API_BASE}/activities/ride/details/{ride_id}",
         )
-
-        coords = []
-        for segment in data.get("coordinates", []):
-            for point in segment:
-                if point and point[0] is not None and point[1] is not None:
-                    coords.append((float(point[0]), float(point[1])))
-        return coords
+        return [
+            (float(p[0]), float(p[1]))
+            for segment in data.get("coordinates", [])
+            for p in segment
+            if p and p[0] is not None and p[1] is not None
+        ]
 
     def get_all_coordinates(
         self,
@@ -237,16 +216,13 @@ class BoschEBikeClient:
             EBikeConnectError: If not authenticated
         """
         self._ensure_authenticated()
-        activities = self.get_activity_headers(max_results=max_activities)
-
-        all_coords = []
-        for activity in activities:
-            for ride in activity.get("ride_headers", []):
-                ride_id = ride.get("id")
-                if ride_id:
-                    coords = self.get_ride_coordinates(ride_id)
-                    all_coords.extend(coords)
-        return all_coords
+        return [
+            coord
+            for activity in self.get_activity_headers(max_results=max_activities)
+            for ride in activity.get("ride_headers", [])
+            if (ride_id := ride.get("id"))
+            for coord in self.get_ride_coordinates(ride_id)
+        ]
 
     def get_ride_details(self, ride_id: str) -> RideDetails:
         """Get detailed information about a specific ride.
@@ -382,61 +358,22 @@ class BoschEBikeClient:
             raise EBikeConnectError("Not authenticated. Please call login() first.")
 
     @staticmethod
-    def _parse_datetime(dt_str: str | int | None) -> datetime:
-        """Parse datetime string or timestamp.
-
-        Args:
-            dt_str: Datetime string in ISO format or timestamp in milliseconds
-
-        Returns:
-            Parsed datetime object
-        """
-        if not dt_str:
+    def _parse_datetime(value: str | int | None) -> datetime:
+        """Parse datetime string or timestamp (milliseconds). Returns now() on failure."""
+        if not value:
             return datetime.now()
-
-        # If it's a timestamp (int or numeric string), convert from milliseconds
-        if isinstance(dt_str, int) or (isinstance(dt_str, str) and dt_str.isdigit()):
-            try:
-                timestamp_ms = int(dt_str)
-                return datetime.fromtimestamp(timestamp_ms / 1000)
-            except (ValueError, OSError):
-                pass
-
-        # If it's a string, try parsing with common formats
-        if isinstance(dt_str, str):
-            for fmt in [
-                "%Y-%m-%dT%H:%M:%S.%fZ",
-                "%Y-%m-%dT%H:%M:%SZ",
-                "%Y-%m-%dT%H:%M:%S",
-            ]:
-                try:
-                    return datetime.strptime(dt_str, fmt)
-                except ValueError:
-                    continue
-
-            # Fallback to fromisoformat
-            try:
-                return datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
-            except (ValueError, AttributeError):
-                pass
-
-        return datetime.now()
+        try:
+            if isinstance(value, int) or (isinstance(value, str) and value.isdigit()):
+                return datetime.fromtimestamp(int(value) / 1000)
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except (ValueError, OSError, AttributeError):
+            return datetime.now()
 
     @staticmethod
     def _parse_int(value: Any, default: int = 0) -> int:
-        """Parse integer value that might be a string.
-
-        Args:
-            value: Value to parse (can be str, int, or None)
-            default: Default value if parsing fails
-
-        Returns:
-            Parsed integer value
-        """
+        """Parse integer value. Returns default on failure."""
         if value is None:
             return default
-        if isinstance(value, int):
-            return value
         try:
             return int(value)
         except (ValueError, TypeError):
@@ -444,19 +381,9 @@ class BoschEBikeClient:
 
     @staticmethod
     def _parse_float(value: Any, default: float | None = None) -> float | None:
-        """Parse float value that might be a string.
-
-        Args:
-            value: Value to parse (can be str, float, or None)
-            default: Default value if parsing fails
-
-        Returns:
-            Parsed float value or None
-        """
+        """Parse float value. Returns default on failure."""
         if value is None:
             return default
-        if isinstance(value, (int, float)):
-            return float(value)
         try:
             return float(value)
         except (ValueError, TypeError):

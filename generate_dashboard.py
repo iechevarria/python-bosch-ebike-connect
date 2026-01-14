@@ -2,22 +2,24 @@
 """Generate an HTML dashboard summarizing eBike ride data."""
 
 import json
-import os
 import subprocess
 from collections import defaultdict
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
-from pathlib import Path
 
 from python_bosch_ebike_connect import BoschEBikeClient
 from python_bosch_ebike_connect.types import RideDetails
-
-CACHE_DIR = Path(__file__).parent / ".ride_cache"
-OUTPUT_DIR = Path(__file__).parent
-
+from utils import CACHE_DIR, OUTPUT_DIR, get_credentials, load_json_cache, save_json_cache
 
 KM_TO_MILES = 0.621371
-KMH_TO_MPH = 0.621371
+
+
+def meters_to_miles(meters: float) -> float:
+    return meters / 1000 * KM_TO_MILES
+
+
+def kmh_to_mph(kmh: float) -> float:
+    return kmh * KM_TO_MILES
 
 
 @dataclass
@@ -57,28 +59,12 @@ def load_cached_ride_details() -> dict[str, dict]:
     """Load all cached ride details."""
     if not CACHE_DIR.exists():
         return {}
-
-    details = {}
-    for file in CACHE_DIR.glob("*_details.json"):
-        ride_id = file.stem.replace("_details", "")
-        with open(file) as f:
-            details[ride_id] = json.load(f)
-    return details
-
-
-def save_ride_details_to_cache(ride_id: str, details: dict) -> None:
-    """Save ride details to cache."""
-    CACHE_DIR.mkdir(exist_ok=True)
-    with open(CACHE_DIR / f"{ride_id}_details.json", "w") as f:
-        json.dump(details, f)
+    return {rid.replace("_details", ""): data for rid, data in load_json_cache("*_details.json").items()}
 
 
 def ride_details_to_dict(ride: RideDetails) -> dict:
     """Convert RideDetails to a JSON-serializable dict."""
-    data = asdict(ride)
-    data["start_time"] = ride.start_time.isoformat()
-    data["end_time"] = ride.end_time.isoformat()
-    return data
+    return {**asdict(ride), "start_time": ride.start_time.isoformat(), "end_time": ride.end_time.isoformat()}
 
 
 def dict_to_ride_details(data: dict) -> RideDetails:
@@ -106,113 +92,71 @@ def fetch_all_ride_details(
     max_activities: int = 200,
 ) -> list[RideDetails]:
     """Fetch all ride details, using cache where available."""
-    activities = client.get_activity_headers(max_results=max_activities)
-
     all_rides: list[RideDetails] = []
     new_count = 0
-    cached_count = 0
 
-    for activity in activities:
+    for activity in client.get_activity_headers(max_results=max_activities):
         for ride_header in activity.get("ride_headers", []):
-            ride_id = ride_header.get("id")
-            if not ride_id:
+            if not (ride_id := ride_header.get("id")):
                 continue
-
             if ride_id in cached_details:
                 all_rides.append(dict_to_ride_details(cached_details[ride_id]))
-                cached_count += 1
                 continue
-
-            # Fetch from API
             try:
                 ride = client.get_ride_details(ride_id)
                 all_rides.append(ride)
-                save_ride_details_to_cache(ride_id, ride_details_to_dict(ride))
+                save_json_cache(f"{ride_id}_details.json", ride_details_to_dict(ride))
                 new_count += 1
                 print(f"  Fetched ride {ride_id}: {ride.distance / 1000:.1f} km")
             except Exception as e:
                 print(f"  Error fetching ride {ride_id}: {e}")
 
-    print(f"\nTotal: {len(all_rides)} rides ({new_count} new, {cached_count} cached)")
+    print(f"\nTotal: {len(all_rides)} rides ({new_count} new, {len(all_rides) - new_count} cached)")
     return all_rides
 
 
 # === DATA AGGREGATION ===
+
+WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 
 def aggregate_ride_data(rides: list[RideDetails]) -> DashboardData:
     """Calculate all summary statistics from ride data."""
     if not rides:
         return DashboardData(
-            rides=[],
-            total_distance_mi=0,
-            total_rides=0,
-            total_time_hours=0,
-            avg_speed_mph=0,
-            avg_distance_mi=0,
-            longest_ride=None,
-            fastest_ride=None,
-            best_day=None,
-            distance_by_day={},
-            distance_by_month={},
-            distance_by_weekday={},
+            rides=[], total_distance_mi=0, total_rides=0, total_time_hours=0,
+            avg_speed_mph=0, avg_distance_mi=0, longest_ride=None, fastest_ride=None,
+            best_day=None, distance_by_day={}, distance_by_month={}, distance_by_weekday={},
         )
 
-    # Summary stats (convert to miles)
-    total_distance_mi = sum(r.distance for r in rides) / 1000 * KM_TO_MILES
-    total_time_hours = sum(r.driving_time for r in rides) / 1000 / 3600
-
-    # Averages (convert to mph)
+    total_distance_mi = meters_to_miles(sum(r.distance for r in rides))
+    total_time_hours = sum(r.driving_time for r in rides) / 3_600_000
     speeds = [r.avg_speed for r in rides if r.avg_speed]
-    avg_speed_mph = (sum(speeds) / len(speeds) * KMH_TO_MPH) if speeds else 0
-    avg_distance_mi = total_distance_mi / len(rides)
 
-    # Records
-    longest_ride = max(rides, key=lambda r: r.distance)
-    fastest_ride = max(
-        (r for r in rides if r.avg_speed), key=lambda r: r.avg_speed or 0, default=None
-    )
-
-    # Calendar data (last 12 months) - in miles
-    today = datetime.now().date()
-    one_year_ago = today - timedelta(days=365)
+    one_year_ago = datetime.now().date() - timedelta(days=365)
     distance_by_day: dict[str, float] = defaultdict(float)
-    for ride in rides:
-        ride_date = ride.start_time.date()
-        if ride_date >= one_year_ago:
-            date_str = ride_date.strftime("%Y-%m-%d")
-            distance_by_day[date_str] += ride.distance / 1000 * KM_TO_MILES
-
-    # Best day record
-    best_day = None
-    if distance_by_day:
-        best_date = max(distance_by_day, key=lambda d: distance_by_day[d])
-        best_day = (best_date, distance_by_day[best_date])
-
-    # Monthly data (last 12 months) - in miles
     distance_by_month: dict[str, float] = defaultdict(float)
-    for ride in rides:
-        ride_date = ride.start_time.date()
-        if ride_date >= one_year_ago:
-            month_str = ride_date.strftime("%Y-%m")
-            distance_by_month[month_str] += ride.distance / 1000 * KM_TO_MILES
+    distance_by_weekday: dict[str, float] = {day: 0.0 for day in WEEKDAYS}
 
-    # Weekly patterns (all time) - in miles
-    weekdays = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-    distance_by_weekday: dict[str, float] = {day: 0.0 for day in weekdays}
     for ride in rides:
-        weekday_idx = ride.start_time.weekday()
-        distance_by_weekday[weekdays[weekday_idx]] += ride.distance / 1000 * KM_TO_MILES
+        dist_mi = meters_to_miles(ride.distance)
+        ride_date = ride.start_time.date()
+        distance_by_weekday[WEEKDAYS[ride.start_time.weekday()]] += dist_mi
+        if ride_date >= one_year_ago:
+            distance_by_day[ride_date.strftime("%Y-%m-%d")] += dist_mi
+            distance_by_month[ride_date.strftime("%Y-%m")] += dist_mi
+
+    best_day = max(distance_by_day.items(), key=lambda x: x[1]) if distance_by_day else None
 
     return DashboardData(
         rides=rides,
         total_distance_mi=total_distance_mi,
         total_rides=len(rides),
         total_time_hours=total_time_hours,
-        avg_speed_mph=avg_speed_mph,
-        avg_distance_mi=avg_distance_mi,
-        longest_ride=longest_ride,
-        fastest_ride=fastest_ride,
+        avg_speed_mph=kmh_to_mph(sum(speeds) / len(speeds)) if speeds else 0,
+        avg_distance_mi=total_distance_mi / len(rides),
+        longest_ride=max(rides, key=lambda r: r.distance),
+        fastest_ride=max((r for r in rides if r.avg_speed), key=lambda r: r.avg_speed or 0, default=None),
         best_day=best_day,
         distance_by_day=dict(distance_by_day),
         distance_by_month=dict(distance_by_month),
@@ -222,158 +166,89 @@ def aggregate_ride_data(rides: list[RideDetails]) -> DashboardData:
 
 # === CALENDAR SVG GENERATION ===
 
+CALENDAR_COLORS = ["#ebedf0", "#ffedd5", "#fed7aa", "#fb923c", "#ea580c"]
+
 
 def generate_calendar_svg(distance_by_day: dict[str, float]) -> str:
     """Generate GitHub-style contribution calendar SVG."""
-    today = datetime.now().date()
+    today, cell_size, cell_gap, margin_left, margin_top = datetime.now().date(), 12, 3, 40, 25
     start_date = today - timedelta(days=365)
+    max_dist = max(distance_by_day.values(), default=1.0)
 
-    # Find max distance for color scaling
-    max_distance = max(distance_by_day.values()) if distance_by_day else 1.0
+    def get_color(dist: float) -> str:
+        if dist == 0:
+            return CALENDAR_COLORS[0]
+        idx = min(int(dist / max_dist * 4) + 1, 4)
+        return CALENDAR_COLORS[idx]
 
-    def get_color(distance: float) -> str:
-        if distance == 0:
-            return "#ebedf0"  # Light gray for empty
-        ratio = distance / max_distance
-        if ratio < 0.25:
-            return "#ffedd5"  # Lightest orange
-        elif ratio < 0.5:
-            return "#fed7aa"
-        elif ratio < 0.75:
-            return "#fb923c"
-        return "#ea580c"  # Darkest orange
-
-    cell_size = 12
-    cell_gap = 3
-    margin_left = 40
-    margin_top = 25
-
-    # Calculate dimensions
-    weeks = 53
-    svg_width = weeks * (cell_size + cell_gap) + margin_left + 10
+    svg_width = 53 * (cell_size + cell_gap) + margin_left + 10
     svg_height = 7 * (cell_size + cell_gap) + margin_top + 10
+    rects, month_labels, current_month = [], [], None
 
-    rects = []
-    month_labels = []
-
-    # Track months for labels
-    current_month = None
-
-    # Start from the first Sunday on or before start_date
-    current = start_date
-    while current.weekday() != 6:  # 6 = Sunday
-        current -= timedelta(days=1)
-
+    current = start_date - timedelta(days=(start_date.weekday() + 1) % 7)
     week_col = 0
     while current <= today:
-        day_of_week = current.weekday()
-        # Adjust: GitHub shows Sun at top, we'll show Mon at top
-        row = day_of_week
-
-        date_str = current.strftime("%Y-%m-%d")
-        distance = distance_by_day.get(date_str, 0)
-
         x = week_col * (cell_size + cell_gap) + margin_left
-        y = row * (cell_size + cell_gap) + margin_top
+        y = current.weekday() * (cell_size + cell_gap) + margin_top
+        date_str = current.strftime("%Y-%m-%d")
+        dist = distance_by_day.get(date_str, 0)
 
         if current >= start_date:
             rects.append(
                 f'<rect x="{x}" y="{y}" width="{cell_size}" height="{cell_size}" '
-                f'fill="{get_color(distance)}" rx="2" '
-                f'data-date="{date_str}" data-distance="{distance:.1f}">'
-                f"<title>{date_str}: {distance:.1f} mi</title></rect>"
+                f'fill="{get_color(dist)}" rx="2"><title>{date_str}: {dist:.1f} mi</title></rect>'
             )
+            if current.month != current_month:
+                current_month = current.month
+                month_labels.append(f'<text x="{x}" y="{margin_top - 8}" class="month-label">{current.strftime("%b")}</text>')
 
-        # Month label at the start of each month
-        if current.month != current_month and current >= start_date:
-            current_month = current.month
-            month_name = current.strftime("%b")
-            month_labels.append(
-                f'<text x="{x}" y="{margin_top - 8}" '
-                f'class="month-label">{month_name}</text>'
-            )
-
-        if day_of_week == 6:  # Sunday, move to next week
+        if current.weekday() == 6:
             week_col += 1
         current += timedelta(days=1)
 
-    weekday_labels = """
-        <text x="0" y="{y1}" class="weekday-label">Mon</text>
-        <text x="0" y="{y2}" class="weekday-label">Wed</text>
-        <text x="0" y="{y3}" class="weekday-label">Fri</text>
-    """.format(
-        y1=margin_top + cell_size,
-        y2=margin_top + 2 * (cell_size + cell_gap) + cell_size,
-        y3=margin_top + 4 * (cell_size + cell_gap) + cell_size,
+    step = cell_size + cell_gap
+    weekday_labels = "".join(
+        f'<text x="0" y="{margin_top + i * step + cell_size}" class="weekday-label">{day}</text>'
+        for i, day in [(0, "Mon"), (2, "Wed"), (4, "Fri")]
     )
-
-    return f"""
-    <svg width="{svg_width}" height="{svg_height}" class="calendar-svg">
-        <style>
-            .month-label {{ font-size: 10px; fill: #666; }}
-            .weekday-label {{ font-size: 10px; fill: #666; }}
-        </style>
-        {weekday_labels}
-        {''.join(month_labels)}
-        {''.join(rects)}
-    </svg>
-    """
+    return f'''<svg width="{svg_width}" height="{svg_height}" class="calendar-svg">
+        <style>.month-label, .weekday-label {{ font-size: 10px; fill: #666; }}</style>
+        {weekday_labels}{"".join(month_labels)}{"".join(rects)}
+    </svg>'''
 
 
 # === HTML GENERATION ===
 
 
+def _record_html(label: str, value: str, date: str) -> str:
+    return f'''<div class="record"><span class="record-label">{label}</span>
+        <span class="record-value">{value}</span><span class="record-date">{date}</span></div>'''
+
+
 def generate_dashboard_html(data: DashboardData, heatmap_path: str) -> str:
     """Generate the complete HTML dashboard."""
-
-    # Format records
-    longest_info = ""
+    records = []
     if data.longest_ride:
-        distance_mi = data.longest_ride.distance / 1000 * KM_TO_MILES
-        longest_info = f"""
-            <div class="record">
-                <span class="record-label">Longest Ride</span>
-                <span class="record-value">{distance_mi:.1f} mi</span>
-                <span class="record-date">{data.longest_ride.start_time.strftime('%b %d, %Y')}</span>
-            </div>
-        """
-
-    fastest_info = ""
+        records.append(_record_html(
+            "Longest Ride", f"{meters_to_miles(data.longest_ride.distance):.1f} mi",
+            data.longest_ride.start_time.strftime('%b %d, %Y')
+        ))
     if data.fastest_ride and data.fastest_ride.avg_speed:
-        speed_mph = data.fastest_ride.avg_speed * KMH_TO_MPH
-        fastest_info = f"""
-            <div class="record">
-                <span class="record-label">Fastest Avg Speed</span>
-                <span class="record-value">{speed_mph:.1f} mph</span>
-                <span class="record-date">{data.fastest_ride.start_time.strftime('%b %d, %Y')}</span>
-            </div>
-        """
-
-    best_day_info = ""
+        records.append(_record_html(
+            "Fastest Avg Speed", f"{kmh_to_mph(data.fastest_ride.avg_speed):.1f} mph",
+            data.fastest_ride.start_time.strftime('%b %d, %Y')
+        ))
     if data.best_day:
-        date_str, distance_mi = data.best_day
-        formatted_date = datetime.strptime(date_str, "%Y-%m-%d").strftime("%b %d, %Y")
-        best_day_info = f"""
-            <div class="record">
-                <span class="record-label">Most Distance in a Day</span>
-                <span class="record-value">{distance_mi:.1f} mi</span>
-                <span class="record-date">{formatted_date}</span>
-            </div>
-        """
+        records.append(_record_html(
+            "Most Distance in a Day", f"{data.best_day[1]:.1f} mi",
+            datetime.strptime(data.best_day[0], "%Y-%m-%d").strftime("%b %d, %Y")
+        ))
 
-    # Generate calendar
-    calendar_svg = generate_calendar_svg(data.distance_by_day)
-
-    # Prepare chart data
-    # Sort months chronologically
     sorted_months = sorted(data.distance_by_month.keys())
-    month_labels_list = [
-        datetime.strptime(m, "%Y-%m").strftime("%b %Y") for m in sorted_months
-    ]
+    month_labels_list = [datetime.strptime(m, "%Y-%m").strftime("%b %Y") for m in sorted_months]
     month_values = [round(data.distance_by_month[m], 1) for m in sorted_months]
-
-    weekday_order = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-    weekday_values = [round(data.distance_by_weekday[d], 1) for d in weekday_order]
+    weekday_values = [round(data.distance_by_weekday[d], 1) for d in WEEKDAYS]
+    calendar_svg = generate_calendar_svg(data.distance_by_day)
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -580,11 +455,7 @@ def generate_dashboard_html(data: DashboardData, heatmap_path: str) -> str:
             </div>
             <div class="calendar-legend">
                 <span>Less</span>
-                <span class="legend-box" style="background: #ebedf0;"></span>
-                <span class="legend-box" style="background: #ffedd5;"></span>
-                <span class="legend-box" style="background: #fed7aa;"></span>
-                <span class="legend-box" style="background: #fb923c;"></span>
-                <span class="legend-box" style="background: #ea580c;"></span>
+                {"".join(f'<span class="legend-box" style="background: {c};"></span>' for c in CALENDAR_COLORS)}
                 <span>More</span>
             </div>
         </section>
@@ -612,9 +483,7 @@ def generate_dashboard_html(data: DashboardData, heatmap_path: str) -> str:
         <section class="card">
             <h2>Records</h2>
             <div class="records-list">
-                {longest_info}
-                {fastest_info}
-                {best_day_info}
+                {"".join(records)}
             </div>
         </section>
 
@@ -670,7 +539,7 @@ def generate_dashboard_html(data: DashboardData, heatmap_path: str) -> str:
         new Chart(document.getElementById('weeklyChart'), {{
             type: 'bar',
             data: {{
-                labels: {json.dumps(weekday_order)},
+                labels: {json.dumps(WEEKDAYS)},
                 datasets: [{{
                     label: 'Total Distance (mi)',
                     data: {json.dumps(weekday_values)},
@@ -701,25 +570,16 @@ def generate_dashboard_html(data: DashboardData, heatmap_path: str) -> str:
 """
 
 
-def ensure_heatmap_exists() -> str:
-    """Ensure the heatmap file exists, generate if needed."""
-    heatmap_path = OUTPUT_DIR / "heatmap_lines.html"
-    if not heatmap_path.exists():
-        print("Heatmap not found, generating...")
-        subprocess.run(
-            ["python", str(OUTPUT_DIR / "generate_heatmap.py"), "--mode", "lines"],
-            check=True,
-        )
+def generate_heatmap() -> str:
+    """Generate the heatmap file."""
+    print("Generating heatmap...")
+    subprocess.run(["python", str(OUTPUT_DIR / "generate_heatmap.py"), "--mode", "lines"], check=True)
     return "heatmap_lines.html"
 
 
 def main() -> None:
     """Main entry point."""
-    username = os.getenv("EBIKE_USERNAME")
-    password = os.getenv("EBIKE_PASSWORD")
-
-    if not username or not password:
-        print("Please set EBIKE_USERNAME and EBIKE_PASSWORD environment variables")
+    if not (creds := get_credentials()):
         return
 
     print("Loading cached ride details...")
@@ -728,25 +588,15 @@ def main() -> None:
 
     print("\nFetching ride details from API...")
     with BoschEBikeClient() as client:
-        client.login(username, password)
+        client.login(*creds)
         rides = fetch_all_ride_details(client, cached_details)
 
-    print("\nAggregating ride data...")
+    print("\nAggregating and generating...")
     data = aggregate_ride_data(rides)
+    html = generate_dashboard_html(data, generate_heatmap())
+    (OUTPUT_DIR / "dashboard.html").write_text(html)
 
-    print("\nEnsuring heatmap exists...")
-    heatmap_path = ensure_heatmap_exists()
-
-    print("\nGenerating dashboard...")
-    html = generate_dashboard_html(data, heatmap_path)
-
-    output_file = OUTPUT_DIR / "dashboard.html"
-    with open(output_file, "w") as f:
-        f.write(html)
-
-    print(f"\nDashboard saved to {output_file}")
-    print(f"Total rides: {data.total_rides}")
-    print(f"Total distance: {data.total_distance_mi:.1f} mi")
+    print(f"\nDashboard saved. Total: {data.total_rides} rides, {data.total_distance_mi:.1f} mi")
 
 
 if __name__ == "__main__":
