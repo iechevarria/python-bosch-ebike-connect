@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Generate an HTML dashboard summarizing eBike ride data."""
-
 import json
 import subprocess
 from collections import defaultdict
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from python_bosch_ebike_connect import BoschEBikeClient
 from python_bosch_ebike_connect.types import RideDetails
@@ -52,23 +51,17 @@ class DashboardData:
     distance_by_weekday: dict[str, float]
 
 
-# === CACHING FUNCTIONS ===
-
-
 def load_cached_ride_details() -> dict[str, dict]:
-    """Load all cached ride details."""
     if not CACHE_DIR.exists():
         return {}
     return {rid.replace("_details", ""): data for rid, data in load_json_cache("*_details.json").items()}
 
 
 def ride_details_to_dict(ride: RideDetails) -> dict:
-    """Convert RideDetails to a JSON-serializable dict."""
     return {**asdict(ride), "start_time": ride.start_time.isoformat(), "end_time": ride.end_time.isoformat()}
 
 
 def dict_to_ride_details(data: dict) -> RideDetails:
-    """Convert a dict back to RideDetails."""
     return RideDetails(
         id=data["id"],
         name=data["name"],
@@ -91,7 +84,6 @@ def fetch_all_ride_details(
     cached_details: dict[str, dict],
     max_activities: int = 200,
 ) -> list[RideDetails]:
-    """Fetch all ride details, using cache where available."""
     all_rides: list[RideDetails] = []
     new_count = 0
 
@@ -115,13 +107,10 @@ def fetch_all_ride_details(
     return all_rides
 
 
-# === DATA AGGREGATION ===
-
 WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 
 def aggregate_ride_data(rides: list[RideDetails]) -> DashboardData:
-    """Calculate all summary statistics from ride data."""
     if not rides:
         return DashboardData(
             rides=[], total_distance_mi=0, total_rides=0, total_time_hours=0,
@@ -164,13 +153,10 @@ def aggregate_ride_data(rides: list[RideDetails]) -> DashboardData:
     )
 
 
-# === CALENDAR SVG GENERATION ===
-
 CALENDAR_COLORS = ["#ebedf0", "#ffedd5", "#fed7aa", "#fb923c", "#ea580c"]
 
 
 def generate_calendar_svg(distance_by_day: dict[str, float]) -> str:
-    """Generate GitHub-style contribution calendar SVG."""
     today, cell_size, cell_gap, margin_left, margin_top = datetime.now().date(), 12, 3, 40, 25
     start_date = today - timedelta(days=365)
     max_dist = max(distance_by_day.values(), default=1.0)
@@ -217,16 +203,12 @@ def generate_calendar_svg(distance_by_day: dict[str, float]) -> str:
     </svg>'''
 
 
-# === HTML GENERATION ===
-
-
 def _record_html(label: str, value: str, date: str) -> str:
     return f'''<div class="record"><span class="record-label">{label}</span>
         <span class="record-value">{value}</span><span class="record-date">{date}</span></div>'''
 
 
 def generate_dashboard_html(data: DashboardData, heatmap_path: str) -> str:
-    """Generate the complete HTML dashboard."""
     records = []
     if data.longest_ride:
         records.append(_record_html(
@@ -571,14 +553,13 @@ def generate_dashboard_html(data: DashboardData, heatmap_path: str) -> str:
 
 
 def generate_heatmap() -> str:
-    """Generate the heatmap file."""
     print("Generating heatmap...")
-    subprocess.run(["python", str(OUTPUT_DIR / "generate_heatmap.py"), "--mode", "lines"], check=True)
+    heatmap_script = Path(__file__).parent / "generate_heatmap.py"
+    subprocess.run(["python", str(heatmap_script), "--mode", "lines"], check=True)
     return "heatmap_lines.html"
 
 
 def main() -> None:
-    """Main entry point."""
     if not (creds := get_credentials()):
         return
 

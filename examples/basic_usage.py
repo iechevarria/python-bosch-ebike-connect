@@ -1,12 +1,9 @@
-"""Example usage of the Bosch eBike Connect client."""
-
 import os
 
 from python_bosch_ebike_connect import BoschEBikeClient
 
 
 def main() -> None:
-    """Demonstrate basic usage of the client."""
     username, password = os.getenv("EBIKE_USERNAME"), os.getenv("EBIKE_PASSWORD")
     if not username or not password:
         print("Please set EBIKE_USERNAME and EBIKE_PASSWORD environment variables")

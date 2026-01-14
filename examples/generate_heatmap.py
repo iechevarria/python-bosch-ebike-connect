@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
-"""Generate a Strava-style heatmap from Bosch eBike Connect ride data."""
-
 import argparse
+from pathlib import Path
 
 import folium
 from folium.plugins import HeatMap
@@ -13,7 +12,6 @@ GRADIENT = {0.0: "#000000", 0.2: "#ff4500", 0.4: "#ff6a00", 0.6: "#ffa500", 0.8:
 
 
 def load_cached_rides() -> dict[str, list[tuple[float, float]]]:
-    """Load all cached ride coordinates (excluding _details.json files)."""
     if not CACHE_DIR.exists():
         return {}
     return {
@@ -28,7 +26,6 @@ def fetch_rides(
     cached_rides: dict[str, list],
     max_activities: int = 200,
 ) -> dict[str, list[tuple[float, float]]]:
-    """Fetch rides, using cache where available."""
     all_rides = dict(cached_rides)
     new_count = 0
 
@@ -47,7 +44,6 @@ def fetch_rides(
 
 
 def generate_heatmap(rides: dict[str, list[tuple[float, float]]], mode: str = "gradient") -> None:
-    """Generate the heatmap HTML file."""
     all_coords = [coord for coords in rides.values() for coord in coords]
     if not all_coords:
         print("No coordinates to map!")

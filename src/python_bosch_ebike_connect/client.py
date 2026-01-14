@@ -27,7 +27,6 @@ class BoschEBikeClient:
     API_BASE = f"{BASE_URL}/ebikeconnect/api"
 
     def __init__(self) -> None:
-        """Initialize the client."""
         self._client = httpx.Client(
             headers={
                 "User-Agent": "Mozilla/5.0 (compatible; python-bosch-ebike-connect)",
@@ -38,15 +37,12 @@ class BoschEBikeClient:
         self._authenticated = False
 
     def __enter__(self) -> "BoschEBikeClient":
-        """Context manager entry."""
         return self
 
     def __exit__(self, *_: object) -> None:
-        """Context manager exit."""
         self.close()
 
     def close(self) -> None:
-        """Close the HTTP client."""
         self._client.close()
 
     def login(self, username: str, password: str, remember: bool = True) -> dict[str, Any]:
@@ -371,7 +367,6 @@ class BoschEBikeClient:
 
     @staticmethod
     def _parse_int(value: Any, default: int = 0) -> int:
-        """Parse integer value. Returns default on failure."""
         if value is None:
             return default
         try:
@@ -381,7 +376,6 @@ class BoschEBikeClient:
 
     @staticmethod
     def _parse_float(value: Any, default: float | None = None) -> float | None:
-        """Parse float value. Returns default on failure."""
         if value is None:
             return default
         try:

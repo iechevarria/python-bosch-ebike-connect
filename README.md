@@ -1,46 +1,20 @@
 # Python Bosch eBike Connect
 
-A Python client library for the Bosch eBike Connect API. This library provides a simple and pythonic interface to interact with the Bosch eBike Connect service, allowing you to retrieve information about your eBikes, activities, rides, and trips.
+An unofficial Python client for the Bosch eBike Connect API, inspired by [ebike-dl](https://github.com/eMerzh/ebike-dl) and [ebike-connect-js](https://github.com/FlorianCassayre/ebike-connect-js).
 
-## Features
-
-- **Comprehensive API Coverage**: Implements all endpoints from both [ebike-dl](https://github.com/eMerzh/ebike-dl) and [ebike-connect-js](https://github.com/FlorianCassayre/ebike-connect-js)
-- **Type Hints**: Full type annotation support for better IDE integration and type checking
-- **Pythonic Design**: Clean, idiomatic Python with minimal dependencies
-- **Context Manager Support**: Easy resource management with context managers
-- **Well Documented**: Comprehensive docstrings and examples
-
-## Installation
-
-Using `uv`:
-
-```bash
-uv add python-bosch-ebike-connect
-```
-
-Or using `pip`:
-
-```bash
-pip install python-bosch-ebike-connect
-```
 
 ## Quick Start
 
 ```python
 from python_bosch_ebike_connect import BoschEBikeClient
 
-# Create client and authenticate
 with BoschEBikeClient() as client:
     client.login("your_email@example.com", "your_password")
 
-    # Get your eBikes
-    ebikes = client.get_my_ebikes()
-    for ebike in ebikes:
+    for ebike in client.get_my_ebikes():
         print(f"eBike: {ebike.name}")
 
-    # Get recent activities
-    activities = client.get_activity_headers(max_results=10)
-    for activity in activities:
+    for activity in client.get_activity_headers(max_results=10):
         print(f"Trip: {activity.get('title')}")
 ```
 
@@ -48,228 +22,38 @@ with BoschEBikeClient() as client:
 
 ### Authentication
 
-#### `login(username: str, password: str, remember: bool = True) -> dict`
+- `login(username, password, remember=True)` - Authenticate with the service
 
-Authenticate with the Bosch eBike Connect service.
+### Service Info
 
-**Parameters:**
-- `username`: Your email or username
-- `password`: Your password
-- `remember`: Whether to persist the session (default: True)
+- `get_version_number()` - Get service version
+- `get_api_version()` - Get API version info
 
-**Returns:** User information dictionary
+### Data
 
-**Raises:**
-- `AuthenticationError`: If authentication fails
-- `APIError`: If the API request fails
-
-### Service Information
-
-#### `get_version_number() -> str`
-
-Get the service version number.
-
-**Returns:** Version number as a string
-
-#### `get_api_version() -> dict`
-
-Get the API version information.
-
-**Returns:** API version information dictionary
-
-### eBikes
-
-#### `get_my_ebikes() -> list[EBike]`
-
-Get the user's registered eBikes.
-
-**Returns:** List of `EBike` objects containing device information
-
-**Example:**
-```python
-ebikes = client.get_my_ebikes()
-for ebike in ebikes:
-    print(f"Name: {ebike.name}")
-    print(f"VIN: {ebike.vin}")
-    if ebike.drive_unit:
-        print(f"Drive Unit: {ebike.drive_unit.get('product_line_name')}")
-```
-
-### Activities
-
-#### `get_activity_headers(max_results: int = 20, offset: int | None = None) -> list[dict]`
-
-Get activity headers (list of trips/rides).
-
-**Parameters:**
-- `max_results`: Maximum number of activities to retrieve (default: 20)
-- `offset`: Timestamp in milliseconds for pagination (default: current time)
-
-**Returns:** List of activity header dictionaries
-
-**Example:**
-```python
-activities = client.get_activity_headers(max_results=5)
-for activity in activities:
-    print(f"{activity.get('title')}: {activity.get('total_distance') / 1000:.2f} km")
-```
-
-### Coordinates
-
-#### `get_ride_coordinates(ride_id: str) -> list[tuple[float, float]]`
-
-Get GPS coordinates for a specific ride.
-
-**Parameters:**
-- `ride_id`: The ride identifier
-
-**Returns:** List of `(latitude, longitude)` tuples. Points with missing GPS data are filtered out.
-
-**Example:**
-```python
-coords = client.get_ride_coordinates("ride_id_here")
-for lat, lng in coords[:5]:
-    print(f"  {lat}, {lng}")
-```
-
-#### `get_all_coordinates(max_activities: int = 100) -> list[tuple[float, float]]`
-
-Get GPS coordinates from all rides across multiple activities. Useful for building heatmaps.
-
-**Parameters:**
-- `max_activities`: Maximum number of activities to fetch (default: 100)
-
-**Returns:** List of `(latitude, longitude)` tuples from all rides.
-
-**Example:**
-```python
-# Get all coordinates for a heatmap
-coords = client.get_all_coordinates(max_activities=50)
-print(f"Total points: {len(coords)}")
-
-# Use with folium for a heatmap
-from folium.plugins import HeatMap
-import folium
-
-m = folium.Map(location=[coords[0][0], coords[0][1]], zoom_start=12)
-HeatMap(coords).add_to(m)
-m.save("heatmap.html")
-```
-
-### Rides
-
-#### `get_ride_details(ride_id: str) -> RideDetails`
-
-Get detailed information about a specific ride.
-
-**Parameters:**
-- `ride_id`: The ride identifier
-
-**Returns:** `RideDetails` object with complete ride information
-
-**Example:**
-```python
-ride = client.get_ride_details("ride_id_here")
-print(f"Distance: {ride.distance / 1000:.2f} km")
-print(f"Duration: {ride.driving_time // 60000} minutes")
-print(f"Average speed: {ride.avg_speed:.1f} km/h")
-if ride.calories:
-    print(f"Calories: {ride.calories:.0f}")
-```
-
-### Trips
-
-#### `get_trip_details(trip_id: str) -> TripDetails`
-
-Get detailed information about a specific trip.
-
-**Parameters:**
-- `trip_id`: The trip identifier
-
-**Returns:** `TripDetails` object with trip information
-
-**Example:**
-```python
-trip = client.get_trip_details("trip_id_here")
-print(f"Trip: {trip.name}")
-print(f"Duration: {trip.driving_time // 60000} minutes")
-print(f"Distance: {trip.distance / 1000:.2f} km")
-```
+- `get_my_ebikes()` - Get user's registered eBikes (returns `list[EBike]`)
+- `get_activity_headers(max_results=20, offset=None)` - Get activity list
+- `get_ride_coordinates(ride_id)` - Get GPS coordinates for a ride (returns `list[tuple[float, float]]`)
+- `get_all_coordinates(max_activities=100)` - Get all GPS coordinates (useful for heatmaps)
+- `get_ride_details(ride_id)` - Get detailed ride info (returns `RideDetails`)
+- `get_trip_details(trip_id)` - Get detailed trip info (returns `TripDetails`)
 
 ## Data Types
 
-### `EBike`
-
-Represents an eBike device with the following attributes:
-- `id`: Unique identifier (typically the drive unit serial number)
-- `name`: eBike name (from drive unit device_name)
-- `vin`: Vehicle identification number (optional, may not be present in API response)
-- `drive_unit`: Drive unit information as dictionary (optional)
-- `battery_unit`: Battery unit information as dictionary (optional)
-- `bui`: Battery information unit data as dictionary (optional)
-- `assistance_level`: Custom assistance level configuration as dictionary (optional)
-
-### `RideDetails`
-
-Detailed ride information with attributes:
-- `id`: Ride identifier
-- `name`: Ride name
-- `start_time`: Start timestamp (datetime)
-- `end_time`: End timestamp (datetime)
-- `driving_time`: Duration in milliseconds (int)
-- `distance`: Distance in meters (float)
-- `avg_speed`: Average speed in km/h (float, optional)
-- `max_speed`: Maximum speed in km/h (float, optional)
-- `avg_cadence`: Average cadence in RPM (float, optional)
-- `calories`: Calories burned (float, optional)
-- `altitude_up`: Altitude gained in meters (float, optional)
-- `altitude_down`: Altitude descended in meters (float, optional)
-- `segments`: Ride segments data (optional)
-
-### `TripDetails`
-
-Trip information with attributes:
-- `id`: Trip identifier
-- `name`: Trip name (may be empty for unnamed trips)
-- `start_time`: Start timestamp (datetime)
-- `end_time`: End timestamp (datetime)
-- `driving_time`: Duration in milliseconds (int)
-- `distance`: Distance in meters (float)
-- `rides`: Always None (ride information is available via `ride_headers` in activity headers)
+- **`EBike`**: `id`, `name`, `vin`, `drive_unit`, `battery_unit`, `bui`, `assistance_level`
+- **`RideDetails`**: `id`, `name`, `start_time`, `end_time`, `driving_time` (ms), `distance` (m), `avg_speed`, `max_speed`, `avg_cadence`, `calories`, `altitude_up`, `altitude_down`, `segments`
+- **`TripDetails`**: `id`, `name`, `start_time`, `end_time`, `driving_time` (ms), `distance` (m), `rides`
 
 ## Error Handling
 
-The library provides three exception types:
-
-- `EBikeConnectError`: Base exception for all errors
-- `AuthenticationError`: Raised when authentication fails
-- `APIError`: Raised when API requests fail
-
-**Example:**
-```python
-from python_bosch_ebike_connect import (
-    BoschEBikeClient,
-    AuthenticationError,
-    APIError,
-)
-
-try:
-    with BoschEBikeClient() as client:
-        client.login("user@example.com", "password")
-        ebikes = client.get_my_ebikes()
-except AuthenticationError as e:
-    print(f"Authentication failed: {e}")
-except APIError as e:
-    print(f"API error: {e} (status code: {e.status_code})")
-```
+Three exception types: `EBikeConnectError` (base), `AuthenticationError`, `APIError` (has `status_code`).
 
 ## Examples
 
-See the `examples/` directory for more detailed examples:
-
-- `basic_usage.py`: Demonstrates all major features of the client
-
-To run the example:
+See `examples/` directory:
+- `basic_usage.py` - Basic client usage
+- `generate_heatmap.py` - Generate a Strava-style heatmap
+- `generate_dashboard.py` - Generate an HTML dashboard with stats
 
 ```bash
 export EBIKE_USERNAME="your_email@example.com"
@@ -279,61 +63,10 @@ uv run examples/basic_usage.py
 
 ## Development
 
-This project uses `uv` for dependency management.
-
-### Setup
-
 ```bash
-# Clone the repository
 git clone https://github.com/yourusername/python-bosch-ebike-connect.git
 cd python-bosch-ebike-connect
-
-# Install dependencies
 uv sync
 ```
 
-### Testing
-
-**Important**: The Bosch eBike Connect API blocks requests from cloud/datacenter IPs and proxied connections. Testing must be done from a local machine with a residential internet connection.
-
-See [TESTING.md](TESTING.md) for detailed testing instructions.
-
-Quick test:
-```bash
-export EBIKE_USERNAME="your_email@example.com"
-export EBIKE_PASSWORD="your_password"
-uv run examples/basic_usage.py
-```
-
-## API Endpoints Implemented
-
-This library implements all endpoints from the referenced projects:
-
-### From ebike-dl
--  POST `/ebikeconnect/api/portal/login/public` - Authentication
--  GET `/ebikeconnect/api/portal/activities/trip/headers` - Activity list
--  GET `/ebikeconnect/api/activities/ride/details/{id}` - Ride details + GPS coordinates
-
-### From ebike-connect-js
--  GET `/versionNumber.txt` - Service version
--  GET `/ebikeconnect/api/api_version` - API version
--  GET `/ebikeconnect/api/activities/trip/details/{id}` - Trip details
--  GET `/ebikeconnect/api/portal/devices/my_ebikes` - User's eBikes
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-## License
-
-MIT License
-
-## Disclaimer
-
-This is an unofficial API client and is not affiliated with, endorsed by, or connected to Bosch eBike Systems or Robert Bosch GmbH. Use at your own risk.
-
-## Credits
-
-This project was inspired by and implements endpoints from:
-- [ebike-dl](https://github.com/eMerzh/ebike-dl) by eMerzh
-- [ebike-connect-js](https://github.com/FlorianCassayre/ebike-connect-js) by FlorianCassayre
+**Note**: It looks like the Bosch API blocks requests from cloud/datacenter IPs. Test from a local machine with residential internet.
