@@ -1,9 +1,11 @@
-import json
 import os
 from pathlib import Path
 
+from python_bosch_ebike_connect import RideCache
+
 CACHE_DIR = Path(__file__).parent.parent / ".ride_cache"
 OUTPUT_DIR = Path(__file__).parent.parent
+RIDE_CACHE = RideCache(CACHE_DIR)
 
 
 def get_credentials() -> tuple[str, str] | None:
@@ -12,18 +14,3 @@ def get_credentials() -> tuple[str, str] | None:
         print("Please set EBIKE_USERNAME and EBIKE_PASSWORD environment variables")
         return None
     return username, password
-
-
-def load_json_cache(pattern: str, exclude_suffix: str | None = None) -> dict[str, list]:
-    if not CACHE_DIR.exists():
-        return {}
-    return {
-        f.stem.replace(exclude_suffix or "", ""): json.loads(f.read_text())
-        for f in CACHE_DIR.glob(pattern)
-        if not exclude_suffix or not f.stem.endswith(exclude_suffix.replace("*", ""))
-    }
-
-
-def save_json_cache(filename: str, data) -> None:
-    CACHE_DIR.mkdir(exist_ok=True)
-    (CACHE_DIR / filename).write_text(json.dumps(data))

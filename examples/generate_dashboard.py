@@ -2,23 +2,18 @@
 import json
 import subprocess
 from collections import defaultdict
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from python_bosch_ebike_connect import BoschEBikeClient
-from python_bosch_ebike_connect.types import RideDetails
-from utils import CACHE_DIR, OUTPUT_DIR, get_credentials, load_json_cache, save_json_cache
-
-KM_TO_MILES = 0.621371
-
-
-def meters_to_miles(meters: float) -> float:
-    return meters / 1000 * KM_TO_MILES
-
-
-def kmh_to_mph(kmh: float) -> float:
-    return kmh * KM_TO_MILES
+from python_bosch_ebike_connect import (
+    BoschEBikeClient,
+    RideDetails,
+    fetch_ride_details,
+    kmh_to_mph,
+    meters_to_miles,
+)
+from utils import OUTPUT_DIR, RIDE_CACHE, get_credentials
 
 
 @dataclass
@@ -51,63 +46,55 @@ class DashboardData:
     distance_by_weekday: dict[str, float]
 
 
-def load_cached_ride_details() -> dict[str, dict]:
-    if not CACHE_DIR.exists():
-        return {}
-    return {rid.replace("_details", ""): data for rid, data in load_json_cache("*_details.json").items()}
+WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 
-def ride_details_to_dict(ride: RideDetails) -> dict:
-    return {**asdict(ride), "start_time": ride.start_time.isoformat(), "end_time": ride.end_time.isoformat()}
+def _merge_ride_group(group: list[RideDetails]) -> RideDetails:
+    if len(group) == 1:
+        return group[0]
 
+    total_distance = sum(r.distance for r in group)
+    total_driving_time = sum(r.driving_time for r in group)
 
-def dict_to_ride_details(data: dict) -> RideDetails:
+    cadences = [(r.avg_cadence, r.driving_time) for r in group if r.avg_cadence is not None]
+    cadence_weight = sum(w for _, w in cadences)
+
+    def total_or_none(attr: str) -> float | None:
+        values = [getattr(r, attr) for r in group if getattr(r, attr) is not None]
+        return sum(values) if values else None
+
+    max_speeds = [r.max_speed for r in group if r.max_speed is not None]
+    segments = [s for r in group for s in (r.segments or [])]
+
     return RideDetails(
-        id=data["id"],
-        name=data["name"],
-        start_time=datetime.fromisoformat(data["start_time"]),
-        end_time=datetime.fromisoformat(data["end_time"]),
-        driving_time=data["driving_time"],
-        distance=data["distance"],
-        avg_speed=data.get("avg_speed"),
-        max_speed=data.get("max_speed"),
-        avg_cadence=data.get("avg_cadence"),
-        calories=data.get("calories"),
-        altitude_up=data.get("altitude_up"),
-        altitude_down=data.get("altitude_down"),
-        segments=data.get("segments"),
+        id=group[0].id,
+        name=group[0].name,
+        start_time=group[0].start_time,
+        end_time=group[-1].end_time,
+        driving_time=total_driving_time,
+        distance=total_distance,
+        avg_speed=(total_distance * 3600 / total_driving_time) if total_driving_time > 0 else None,
+        max_speed=max(max_speeds) if max_speeds else None,
+        avg_cadence=(sum(v * w for v, w in cadences) / cadence_weight) if cadence_weight > 0 else None,
+        calories=total_or_none("calories"),
+        altitude_up=total_or_none("altitude_up"),
+        altitude_down=total_or_none("altitude_down"),
+        segments=segments or None,
     )
 
 
-def fetch_all_ride_details(
-    client: BoschEBikeClient,
-    cached_details: dict[str, dict],
-    max_activities: int = 200,
-) -> list[RideDetails]:
-    all_rides: list[RideDetails] = []
-    new_count = 0
-
-    for activity in client.get_activity_headers(max_results=max_activities):
-        for ride_header in activity.get("ride_headers", []):
-            if not (ride_id := ride_header.get("id")):
-                continue
-            if ride_id in cached_details:
-                all_rides.append(dict_to_ride_details(cached_details[ride_id]))
-                continue
-            try:
-                ride = client.get_ride_details(ride_id)
-                all_rides.append(ride)
-                save_json_cache(f"{ride_id}_details.json", ride_details_to_dict(ride))
-                new_count += 1
-                print(f"  Fetched ride {ride_id}: {ride.distance / 1000:.1f} km")
-            except Exception as e:
-                print(f"  Error fetching ride {ride_id}: {e}")
-
-    print(f"\nTotal: {len(all_rides)} rides ({new_count} new, {len(all_rides) - new_count} cached)")
-    return all_rides
-
-
-WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+def merge_close_rides(rides: list[RideDetails], max_gap_seconds: int = 3600) -> list[RideDetails]:
+    """Merge rides whose gap (previous end_time → next start_time) is <= max_gap_seconds."""
+    if not rides:
+        return []
+    sorted_rides = sorted(rides, key=lambda r: r.start_time)
+    groups: list[list[RideDetails]] = [[sorted_rides[0]]]
+    for ride in sorted_rides[1:]:
+        if (ride.start_time - groups[-1][-1].end_time).total_seconds() <= max_gap_seconds:
+            groups[-1].append(ride)
+        else:
+            groups.append([ride])
+    return [_merge_ride_group(g) for g in groups]
 
 
 def aggregate_ride_data(rides: list[RideDetails]) -> DashboardData:
@@ -329,7 +316,7 @@ def generate_dashboard_html(data: DashboardData, heatmap_path: str) -> str:
             display: block;
             font-size: 1.75rem;
             font-weight: 700;
-            color: #ea580c;
+            color: #3333ff;
         }}
 
         .stat-label {{
@@ -364,7 +351,7 @@ def generate_dashboard_html(data: DashboardData, heatmap_path: str) -> str:
         .record-value {{
             font-size: 1.25rem;
             font-weight: 700;
-            color: #ea580c;
+            color: #3333ff;
             margin-right: 0.5rem;
         }}
 
@@ -386,7 +373,7 @@ def generate_dashboard_html(data: DashboardData, heatmap_path: str) -> str:
 
         .calendar-svg rect:hover {{
             opacity: 0.8;
-            stroke: #ea580c;
+            stroke: #3333ff;
             stroke-width: 1;
         }}
 
@@ -563,17 +550,16 @@ def main() -> None:
     if not (creds := get_credentials()):
         return
 
-    print("Loading cached ride details...")
-    cached_details = load_cached_ride_details()
-    print(f"Found {len(cached_details)} cached ride details")
-
-    print("\nFetching ride details from API...")
+    print("Fetching ride details from API...")
     with BoschEBikeClient() as client:
         client.login(*creds)
-        rides = fetch_all_ride_details(client, cached_details)
+        rides = fetch_ride_details(client, RIDE_CACHE)
+
+    merged = merge_close_rides(rides)
+    print(f"Merged {len(rides)} rides into {len(merged)} (gap <= 1 hour)")
 
     print("\nAggregating and generating...")
-    data = aggregate_ride_data(rides)
+    data = aggregate_ride_data(merged)
     html = generate_dashboard_html(data, generate_heatmap())
     (OUTPUT_DIR / "dashboard.html").write_text(html)
 

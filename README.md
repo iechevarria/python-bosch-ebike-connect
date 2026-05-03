@@ -38,6 +38,22 @@ with BoschEBikeClient() as client:
 - `get_ride_details(ride_id)` - Get detailed ride info (returns `RideDetails`)
 - `get_trip_details(trip_id)` - Get detailed trip info (returns `TripDetails`)
 
+### Caching helpers
+
+For scripts that pull data repeatedly, the library ships a JSON-file cache:
+
+```python
+from python_bosch_ebike_connect import BoschEBikeClient, RideCache, fetch_ride_details, fetch_ride_coords
+
+cache = RideCache(".ride_cache")
+with BoschEBikeClient() as client:
+    client.login(username, password)
+    rides = fetch_ride_details(client, cache)        # list[RideDetails]
+    coords = fetch_ride_coords(client, cache)        # dict[ride_id, list[(lat, lon)]]
+```
+
+`fetch_ride_details` and `fetch_ride_coords` return everything from the cache and only hit the API for new rides. Unit helpers `meters_to_miles` and `kmh_to_mph` are also exported.
+
 ## Data Types
 
 - **`EBike`**: `id`, `name`, `vin`, `drive_unit`, `battery_unit`, `bui`, `assistance_level`
@@ -64,7 +80,7 @@ uv run examples/basic_usage.py
 ## Development
 
 ```bash
-git clone https://github.com/yourusername/python-bosch-ebike-connect.git
+git clone https://github.com/iechevarria/python-bosch-ebike-connect.git
 cd python-bosch-ebike-connect
 uv sync
 ```

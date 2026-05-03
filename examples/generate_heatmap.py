@@ -1,46 +1,13 @@
 #!/usr/bin/env python3
 import argparse
-from pathlib import Path
 
 import folium
 from folium.plugins import HeatMap
 
-from python_bosch_ebike_connect import BoschEBikeClient
-from utils import CACHE_DIR, OUTPUT_DIR, get_credentials, load_json_cache, save_json_cache
+from python_bosch_ebike_connect import BoschEBikeClient, fetch_ride_coords
+from utils import OUTPUT_DIR, RIDE_CACHE, get_credentials
 
 GRADIENT = {0.0: "#000000", 0.2: "#ff4500", 0.4: "#ff6a00", 0.6: "#ffa500", 0.8: "#ffcc00", 1.0: "#ffffff"}
-
-
-def load_cached_rides() -> dict[str, list[tuple[float, float]]]:
-    if not CACHE_DIR.exists():
-        return {}
-    return {
-        rid: [tuple(c) for c in coords]
-        for rid, coords in load_json_cache("*.json").items()
-        if not rid.endswith("_details")
-    }
-
-
-def fetch_rides(
-    client: BoschEBikeClient,
-    cached_rides: dict[str, list],
-    max_activities: int = 200,
-) -> dict[str, list[tuple[float, float]]]:
-    all_rides = dict(cached_rides)
-    new_count = 0
-
-    for activity in client.get_activity_headers(max_results=max_activities):
-        for ride in activity.get("ride_headers", []):
-            if not (ride_id := ride.get("id")) or ride_id in all_rides:
-                continue
-            if coords := client.get_ride_coordinates(ride_id):
-                all_rides[ride_id] = coords
-                save_json_cache(f"{ride_id}.json", coords)
-                new_count += 1
-                print(f"  Fetched ride {ride_id}: {len(coords)} points")
-
-    print(f"\nTotal: {len(all_rides)} rides ({new_count} new, {len(all_rides) - new_count} cached)")
-    return all_rides
 
 
 def generate_heatmap(rides: dict[str, list[tuple[float, float]]], mode: str = "gradient") -> None:
@@ -73,14 +40,10 @@ def main() -> None:
     if not (creds := get_credentials()):
         return
 
-    print("Loading cached rides...")
-    cached_rides = load_cached_rides()
-    print(f"Found {len(cached_rides)} cached rides")
-
-    print("\nFetching rides from API...")
+    print("Fetching rides from API...")
     with BoschEBikeClient() as client:
         client.login(*creds)
-        all_rides = fetch_rides(client, cached_rides)
+        all_rides = fetch_ride_coords(client, RIDE_CACHE)
 
     print(f"\nGenerating {args.mode} heatmap...")
     generate_heatmap(all_rides, mode=args.mode)
