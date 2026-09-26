@@ -33,31 +33,36 @@ with BoschEBikeClient() as client:
 
 - `get_my_ebikes()` - Get user's registered eBikes (returns `list[EBike]`)
 - `get_activity_headers(max_results=20, offset=None)` - Get activity list
+- `get_ride_raw(ride_id)` - Get the untouched ride response (summary, GPS track and 1 Hz series in one request)
 - `get_ride_coordinates(ride_id)` - Get GPS coordinates for a ride (returns `list[tuple[float, float]]`)
 - `get_all_coordinates(max_activities=100)` - Get all GPS coordinates (useful for heatmaps)
 - `get_ride_details(ride_id)` - Get detailed ride info (returns `RideDetails`)
+- `get_ride_series(ride_id)` - Get the 1 Hz speed/altitude/rider-power samples (returns `RideSeries`)
+- `parse_ride_details(raw)`, `parse_ride_coordinates(raw)`, `parse_ride_series(raw)` - Parse a `get_ride_raw` response without another request
 - `get_trip_details(trip_id)` - Get detailed trip info (returns `TripDetails`)
 
 ### Caching helpers
 
-For scripts that pull data repeatedly, the library ships a JSON-file cache:
+For scripts that pull data repeatedly, the library ships a JSON-file cache. It stores each ride's raw API response once (`{ride_id}_raw.json`) and parses details, coordinates and series from it on load:
 
 ```python
-from python_bosch_ebike_connect import BoschEBikeClient, RideCache, fetch_ride_details, fetch_ride_coords
+from python_bosch_ebike_connect import BoschEBikeClient, RideCache, fetch_ride_details, fetch_ride_coords, fetch_ride_series
 
 cache = RideCache(".ride_cache")
 with BoschEBikeClient() as client:
     client.login(username, password)
     rides = fetch_ride_details(client, cache)        # list[RideDetails]
     coords = fetch_ride_coords(client, cache)        # dict[ride_id, list[(lat, lon)]]
+    series = fetch_ride_series(client, cache)        # dict[ride_id, RideSeries]
 ```
 
-`fetch_ride_details` and `fetch_ride_coords` return everything from the cache and only hit the API for new rides. Unit helpers `meters_to_miles` and `kmh_to_mph` are also exported.
+All three share `sync_rides`, so together they cost one request per new ride. Fields added to the parsers show up for every cached ride with no refetch. Unit helpers `meters_to_miles` and `kmh_to_mph` are also exported.
 
 ## Data Types
 
 - **`EBike`**: `id`, `name`, `vin`, `drive_unit`, `battery_unit`, `bui`, `assistance_level`
-- **`RideDetails`**: `id`, `name`, `start_time`, `end_time`, `driving_time` (ms), `distance` (m), `avg_speed`, `max_speed`, `avg_cadence`, `calories`, `altitude_up`, `altitude_down`, `segments`
+- **`RideDetails`**: `id`, `name`, `start_time`, `end_time`, `driving_time` (ms), `distance` (m), `avg_speed`, `max_speed`, `avg_cadence`, `calories`, `elevation_gain`, `elevation_loss`, `segments`, plus power/assist fields (`assist_pct`, `driver_energy_j`, `avg_driver_power`, `battery_wh()`, …; see the docstring for their semantics)
+- **`RideSeries`**: `speed_kmh`, `altitude_m`, `driver_power_w` (1 Hz, aligned)
 - **`TripDetails`**: `id`, `name`, `start_time`, `end_time`, `driving_time` (ms), `distance` (m), `rides`
 
 ## Error Handling

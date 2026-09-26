@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+from pathlib import Path
 
 import folium
 from folium.plugins import HeatMap
@@ -10,11 +11,11 @@ from utils import OUTPUT_DIR, RIDE_CACHE, get_credentials
 GRADIENT = {0.0: "#000000", 0.2: "#ff4500", 0.4: "#ff6a00", 0.6: "#ffa500", 0.8: "#ffcc00", 1.0: "#ffffff"}
 
 
-def generate_heatmap(rides: dict[str, list[tuple[float, float]]], mode: str = "gradient") -> None:
+def generate_heatmap(rides: dict[str, list[tuple[float, float]]], mode: str = "gradient") -> Path | None:
     all_coords = [coord for coords in rides.values() for coord in coords]
     if not all_coords:
         print("No coordinates to map!")
-        return
+        return None
 
     center = [sum(c[i] for c in all_coords) / len(all_coords) for i in range(2)]
     m = folium.Map(location=center, zoom_start=13, tiles="cartodbpositron")
@@ -29,6 +30,7 @@ def generate_heatmap(rides: dict[str, list[tuple[float, float]]], mode: str = "g
 
     m.save(output_file)
     print(f"\nSaved heatmap to {output_file}\nTotal points: {len(all_coords)}")
+    return output_file
 
 
 def main() -> None:

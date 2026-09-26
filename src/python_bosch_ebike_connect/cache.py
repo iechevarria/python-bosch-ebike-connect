@@ -1,91 +1,91 @@
-"""On-disk JSON cache for ride coordinates and details, plus sync helpers.
+"""On-disk JSON cache of raw ride responses, plus sync helpers.
 
 Layout under the cache directory:
-    {ride_id}.json          # coordinate track  (list[[lat, lon]])
-    {ride_id}_details.json  # serialized RideDetails
+    {ride_id}_raw.json  # the untouched /activities/ride/details response
+
+Details, coordinates and series are all parsed from the raw response when loaded, so one request
+per ride covers all three, and a newly parsed field shows up for every cached ride without a
+refetch.
 """
 from __future__ import annotations
 
 import json
-from dataclasses import asdict
-from datetime import datetime
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from .client import BoschEBikeClient
-from .types import RideDetails
+from .exceptions import APIError, EBikeConnectError
+from .types import RideDetails, RideSeries
+
+T = TypeVar("T")
 
 
 class RideCache:
-    """JSON-file cache for ride coordinates and details."""
+    """JSON-file cache of raw ride responses, keyed by ride id."""
 
     def __init__(self, directory: Path | str) -> None:
         self.directory = Path(directory)
 
-    def _read(self, name: str) -> Any | None:
-        path = self.directory / name
+    def _path(self, ride_id: str) -> Path:
+        return self.directory / f"{ride_id}_raw.json"
+
+    def load_raw(self, ride_id: str) -> dict[str, Any] | None:
+        path = self._path(ride_id)
         return json.loads(path.read_text()) if path.exists() else None
 
-    def _write(self, name: str, data: Any) -> None:
+    def save_raw(self, ride_id: str, data: dict[str, Any]) -> None:
         self.directory.mkdir(parents=True, exist_ok=True)
-        (self.directory / name).write_text(json.dumps(data))
+        self._path(ride_id).write_text(json.dumps(data))
 
-    def load_coords(self, ride_id: str) -> list[tuple[float, float]] | None:
-        data = self._read(f"{ride_id}.json")
-        return [tuple(c) for c in data] if data else None
-
-    def save_coords(self, ride_id: str, coords: list[tuple[float, float]]) -> None:
-        self._write(f"{ride_id}.json", coords)
-
-    def load_all_coords(self) -> dict[str, list[tuple[float, float]]]:
+    def load_all_raw(self) -> dict[str, dict[str, Any]]:
         if not self.directory.exists():
             return {}
         return {
-            f.stem: [tuple(c) for c in json.loads(f.read_text())]
-            for f in self.directory.glob("*.json")
-            if not f.stem.endswith("_details")
-        }
-
-    def load_details(self, ride_id: str) -> RideDetails | None:
-        data = self._read(f"{ride_id}_details.json")
-        return _dict_to_ride_details(data) if data else None
-
-    def save_details(self, ride: RideDetails) -> None:
-        self._write(f"{ride.id}_details.json", _ride_details_to_dict(ride))
-
-    def load_all_details(self) -> dict[str, RideDetails]:
-        if not self.directory.exists():
-            return {}
-        return {
-            f.stem.removesuffix("_details"): _dict_to_ride_details(json.loads(f.read_text()))
-            for f in self.directory.glob("*_details.json")
+            f.stem.removesuffix("_raw"): json.loads(f.read_text())
+            for f in self.directory.glob("*_raw.json")
         }
 
 
-def _ride_details_to_dict(ride: RideDetails) -> dict[str, Any]:
-    return {
-        **asdict(ride),
-        "start_time": ride.start_time.isoformat(),
-        "end_time": ride.end_time.isoformat(),
-    }
+def sync_rides(
+    client: BoschEBikeClient,
+    cache: RideCache,
+    max_activities: int = 200,
+) -> dict[str, dict[str, Any]]:
+    """Return the raw response for every ride across the most recent activities.
+
+    Only rides missing from the cache hit the API. A ride that fails to fetch is reported and
+    skipped, so it is retried on the next run; authentication errors are not caught.
+    """
+    raw: dict[str, dict[str, Any]] = {}
+    new_count = 0
+    for activity in client.get_activity_headers(max_results=max_activities):
+        for header in activity.get("ride_headers", []):
+            if not (rid := header.get("id")):
+                continue
+            if (data := cache.load_raw(rid)) is None:
+                try:
+                    data = client.get_ride_raw(rid)
+                except APIError as e:
+                    print(f"  Error fetching ride {rid}: {e}")
+                    continue
+                cache.save_raw(rid, data)
+                new_count += 1
+                if new_count % 25 == 0:
+                    print(f"  Fetched {new_count} rides...")
+            raw[rid] = data
+    print(f"\nTotal: {len(raw)} rides ({new_count} new, {len(raw) - new_count} cached)")
+    return raw
 
 
-def _dict_to_ride_details(data: dict[str, Any]) -> RideDetails:
-    return RideDetails(
-        id=data["id"],
-        name=data["name"],
-        start_time=datetime.fromisoformat(data["start_time"]),
-        end_time=datetime.fromisoformat(data["end_time"]),
-        driving_time=data["driving_time"],
-        distance=data["distance"],
-        avg_speed=data.get("avg_speed"),
-        max_speed=data.get("max_speed"),
-        avg_cadence=data.get("avg_cadence"),
-        calories=data.get("calories"),
-        altitude_up=data.get("altitude_up"),
-        altitude_down=data.get("altitude_down"),
-        segments=data.get("segments"),
-    )
+def _parse_each(raw: dict[str, dict[str, Any]], parse: Callable[[dict[str, Any]], T]) -> dict[str, T]:
+    parsed: dict[str, T] = {}
+    for rid, data in raw.items():
+        try:
+            parsed[rid] = parse(data)
+        except (EBikeConnectError, ValueError, TypeError) as e:
+            print(f"  Skipping ride {rid}: {e}")
+    return parsed
 
 
 def fetch_ride_details(
@@ -94,26 +94,18 @@ def fetch_ride_details(
     max_activities: int = 200,
 ) -> list[RideDetails]:
     """Return RideDetails for every ride across the most recent activities, caching new fetches."""
-    cached = cache.load_all_details()
-    rides: list[RideDetails] = []
-    new_count = 0
-    for activity in client.get_activity_headers(max_results=max_activities):
-        for header in activity.get("ride_headers", []):
-            if not (rid := header.get("id")):
-                continue
-            if rid in cached:
-                rides.append(cached[rid])
-                continue
-            try:
-                ride = client.get_ride_details(rid)
-                cache.save_details(ride)
-                rides.append(ride)
-                new_count += 1
-                print(f"  Fetched ride {rid}: {ride.distance / 1000:.1f} km")
-            except Exception as e:
-                print(f"  Error fetching ride {rid}: {e}")
-    print(f"\nTotal: {len(rides)} rides ({new_count} new, {len(rides) - new_count} cached)")
-    return rides
+    raw = sync_rides(client, cache, max_activities)
+    return list(_parse_each(raw, BoschEBikeClient.parse_ride_details).values())
+
+
+def fetch_ride_series(
+    client: BoschEBikeClient,
+    cache: RideCache,
+    max_activities: int = 200,
+) -> dict[str, RideSeries]:
+    """Return the 1 Hz sample series for every ride, caching new fetches."""
+    raw = sync_rides(client, cache, max_activities)
+    return _parse_each(raw, BoschEBikeClient.parse_ride_series)
 
 
 def fetch_ride_coords(
@@ -121,17 +113,7 @@ def fetch_ride_coords(
     cache: RideCache,
     max_activities: int = 200,
 ) -> dict[str, list[tuple[float, float]]]:
-    """Return coordinate tracks for every ride, caching new fetches."""
-    coords = cache.load_all_coords()
-    new_count = 0
-    for activity in client.get_activity_headers(max_results=max_activities):
-        for header in activity.get("ride_headers", []):
-            if not (rid := header.get("id")) or rid in coords:
-                continue
-            if track := client.get_ride_coordinates(rid):
-                cache.save_coords(rid, track)
-                coords[rid] = track
-                new_count += 1
-                print(f"  Fetched ride {rid}: {len(track)} points")
-    print(f"\nTotal: {len(coords)} rides ({new_count} new, {len(coords) - new_count} cached)")
-    return coords
+    """Return coordinate tracks for every ride that has GPS data, caching new fetches."""
+    raw = sync_rides(client, cache, max_activities)
+    tracks = _parse_each(raw, BoschEBikeClient.parse_ride_coordinates)
+    return {rid: track for rid, track in tracks.items() if track}

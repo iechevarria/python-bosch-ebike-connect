@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 import json
-import subprocess
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from pathlib import Path
 
 from python_bosch_ebike_connect import (
     BoschEBikeClient,
     RideDetails,
+    fetch_ride_coords,
     fetch_ride_details,
     kmh_to_mph,
     meters_to_miles,
 )
+from generate_heatmap import generate_heatmap
 from utils import OUTPUT_DIR, RIDE_CACHE, get_credentials
 
 
@@ -56,15 +56,37 @@ def _merge_ride_group(group: list[RideDetails]) -> RideDetails:
     total_distance = sum(r.distance for r in group)
     total_driving_time = sum(r.driving_time for r in group)
 
-    cadences = [(r.avg_cadence, r.driving_time) for r in group if r.avg_cadence is not None]
-    cadence_weight = sum(w for _, w in cadences)
-
     def total_or_none(attr: str) -> float | None:
         values = [getattr(r, attr) for r in group if getattr(r, attr) is not None]
         return sum(values) if values else None
 
-    max_speeds = [r.max_speed for r in group if r.max_speed is not None]
+    def max_or_none(attr: str) -> float | None:
+        values = [getattr(r, attr) for r in group if getattr(r, attr) is not None]
+        return max(values) if values else None
+
+    def weighted_avg(pairs: list[tuple[float, float]]) -> float | None:
+        weight = sum(w for _, w in pairs)
+        return sum(v * w for v, w in pairs) / weight if weight > 0 else None
+
     segments = [s for r in group for s in (r.segments or [])]
+
+    # assist_pct is a share of distance, so levels combine weighted by each ride's distance.
+    assisted = [r for r in group if r.assist_pct]
+    levels = {level for r in assisted for level in r.assist_pct}
+    assist_pct = {
+        level: weighted_avg([(r.assist_pct.get(level, 0.0), r.distance) for r in assisted]) or 0.0
+        for level in levels
+    }
+
+    # avg_driver_power is energy over pedaling time, not a per-ride average to be averaged.
+    pedaled = [r for r in group if r.driver_energy_j is not None and r.pedaling_time_s]
+    pedal_time = sum(r.pedaling_time_s for r in pedaled)
+
+    # The energy shares combine weighted by each ride's total energy (driver energy / driver
+    # share), which keeps battery_wh() of the merged ride equal to the sum over the group.
+    # Mixing in rides without energy data would make that silently wrong, so all-or-nothing.
+    have_energy = all(r.driver_energy_j and r.driver_share_pct and r.battery_share_pct is not None for r in group)
+    ride_energy = [(r, r.driver_energy_j / r.driver_share_pct) for r in group] if have_energy else []
 
     return RideDetails(
         id=group[0].id,
@@ -74,12 +96,21 @@ def _merge_ride_group(group: list[RideDetails]) -> RideDetails:
         driving_time=total_driving_time,
         distance=total_distance,
         avg_speed=(total_distance * 3600 / total_driving_time) if total_driving_time > 0 else None,
-        max_speed=max(max_speeds) if max_speeds else None,
-        avg_cadence=(sum(v * w for v, w in cadences) / cadence_weight) if cadence_weight > 0 else None,
+        max_speed=max_or_none("max_speed"),
+        avg_cadence=weighted_avg([(r.avg_cadence, r.driving_time) for r in group if r.avg_cadence is not None]),
         calories=total_or_none("calories"),
-        altitude_up=total_or_none("altitude_up"),
-        altitude_down=total_or_none("altitude_down"),
+        elevation_gain=total_or_none("elevation_gain"),
+        elevation_loss=total_or_none("elevation_loss"),
         segments=segments or None,
+        operation_time=sum(r.operation_time for r in group),
+        max_cadence=max_or_none("max_cadence"),
+        elevation_gain_smoothed=total_or_none("elevation_gain_smoothed"),
+        assist_pct=assist_pct,
+        driver_energy_j=total_or_none("driver_energy_j"),
+        avg_driver_power=sum(r.driver_energy_j for r in pedaled) / pedal_time if pedal_time else None,
+        pedaling_time_s=total_or_none("pedaling_time_s"),
+        driver_share_pct=weighted_avg([(r.driver_share_pct, e) for r, e in ride_energy]),
+        battery_share_pct=weighted_avg([(r.battery_share_pct, e) for r, e in ride_energy]),
     )
 
 
@@ -154,9 +185,7 @@ def generate_calendar_svg(distance_by_day: dict[str, float]) -> str:
         idx = min(int(dist / max_dist * 4) + 1, 4)
         return CALENDAR_COLORS[idx]
 
-    svg_width = 53 * (cell_size + cell_gap) + margin_left + 10
-    svg_height = 7 * (cell_size + cell_gap) + margin_top + 10
-    rects, month_labels, current_month = [], [], None
+    rects, month_labels, current_month, last_col = [], [], None, 0
 
     current = start_date - timedelta(days=(start_date.weekday() + 1) % 7)
     week_col = 0
@@ -171,6 +200,7 @@ def generate_calendar_svg(distance_by_day: dict[str, float]) -> str:
                 f'<rect x="{x}" y="{y}" width="{cell_size}" height="{cell_size}" '
                 f'fill="{get_color(dist)}" rx="2"><title>{date_str}: {dist:.1f} mi</title></rect>'
             )
+            last_col = week_col
             if current.month != current_month:
                 current_month = current.month
                 month_labels.append(f'<text x="{x}" y="{margin_top - 8}" class="month-label">{current.strftime("%b")}</text>')
@@ -180,6 +210,9 @@ def generate_calendar_svg(distance_by_day: dict[str, float]) -> str:
         current += timedelta(days=1)
 
     step = cell_size + cell_gap
+    # A year can straddle 54 week columns depending on where it starts, so size to what was drawn.
+    svg_width = (last_col + 1) * step + margin_left + 10
+    svg_height = 7 * step + margin_top + 10
     weekday_labels = "".join(
         f'<text x="0" y="{margin_top + i * step + cell_size}" class="weekday-label">{day}</text>'
         for i, day in [(0, "Mon"), (2, "Wed"), (4, "Fri")]
@@ -539,28 +572,26 @@ def generate_dashboard_html(data: DashboardData, heatmap_path: str) -> str:
 """
 
 
-def generate_heatmap() -> str:
-    print("Generating heatmap...")
-    heatmap_script = Path(__file__).parent / "generate_heatmap.py"
-    subprocess.run(["python", str(heatmap_script), "--mode", "lines"], check=True)
-    return "heatmap_lines.html"
-
-
 def main() -> None:
     if not (creds := get_credentials()):
         return
 
-    print("Fetching ride details from API...")
+    print("Fetching rides from API...")
     with BoschEBikeClient() as client:
         client.login(*creds)
+        # Both read the same cached raw responses; only the second's header listing hits the API.
         rides = fetch_ride_details(client, RIDE_CACHE)
+        coords = fetch_ride_coords(client, RIDE_CACHE)
 
     merged = merge_close_rides(rides)
     print(f"Merged {len(rides)} rides into {len(merged)} (gap <= 1 hour)")
 
+    print("\nGenerating heatmap...")
+    heatmap_file = generate_heatmap(coords, mode="lines")
+
     print("\nAggregating and generating...")
     data = aggregate_ride_data(merged)
-    html = generate_dashboard_html(data, generate_heatmap())
+    html = generate_dashboard_html(data, heatmap_file.name if heatmap_file else "")
     (OUTPUT_DIR / "dashboard.html").write_text(html)
 
     print(f"\nDashboard saved. Total: {data.total_rides} rides, {data.total_distance_mi:.1f} mi")

@@ -45,8 +45,8 @@ def main() -> None:
                     print(f"  Avg/Max speed: {ride.avg_speed:.1f} / {ride.max_speed:.1f} km/h")
                 if ride.calories:
                     print(f"  Calories: {ride.calories:.0f}")
-                if ride.altitude_up:
-                    print(f"  Altitude gain: {ride.altitude_up} m")
+                if ride.elevation_gain:
+                    print(f"  Elevation gain: {ride.elevation_gain} m")
 
 
 if __name__ == "__main__":

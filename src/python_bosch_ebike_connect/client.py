@@ -6,7 +6,7 @@ from typing import Any
 import httpx
 
 from .exceptions import APIError, AuthenticationError, EBikeConnectError
-from .types import EBike, RideDetails, TripDetails
+from .types import EBike, RideDetails, RideSeries, TripDetails
 
 
 class BoschEBikeClient:
@@ -167,6 +167,24 @@ class BoschEBikeClient:
             },
         )
 
+    def get_ride_raw(self, ride_id: str) -> dict[str, Any]:
+        """Get the untouched ride-details response for a ride.
+
+        One response carries the summary, the GPS track and the 1 Hz series.
+        :meth:`get_ride_details`, :meth:`get_ride_coordinates` and :meth:`get_ride_series` each
+        fetch it and parse one slice; when you need more than one, fetch it once and call the
+        matching ``parse_*`` methods instead.
+
+        Raises:
+            APIError: If the API request fails
+            EBikeConnectError: If not authenticated
+        """
+        self._ensure_authenticated()
+        return self._request_json(
+            "GET",
+            f"{self.API_BASE}/activities/ride/details/{ride_id}",
+        )
+
     def get_ride_coordinates(self, ride_id: str) -> list[tuple[float, float]]:
         """Get GPS coordinates for a specific ride.
 
@@ -181,11 +199,11 @@ class BoschEBikeClient:
             APIError: If the API request fails
             EBikeConnectError: If not authenticated
         """
-        self._ensure_authenticated()
-        data = self._request_json(
-            "GET",
-            f"{self.API_BASE}/activities/ride/details/{ride_id}",
-        )
+        return self.parse_ride_coordinates(self.get_ride_raw(ride_id))
+
+    @staticmethod
+    def parse_ride_coordinates(data: dict[str, Any]) -> list[tuple[float, float]]:
+        """Extract the GPS track from a :meth:`get_ride_raw` response."""
         return [
             (float(p[0]), float(p[1]))
             for segment in data.get("coordinates", [])
@@ -231,29 +249,109 @@ class BoschEBikeClient:
 
         Raises:
             APIError: If the API request fails
-            EBikeConnectError: If not authenticated
+            EBikeConnectError: If not authenticated, or the ride's timestamps are unparseable
         """
-        self._ensure_authenticated()
-        data = self._request_json(
-            "GET",
-            f"{self.API_BASE}/activities/ride/details/{ride_id}",
-        )
+        return self.parse_ride_details(self.get_ride_raw(ride_id))
 
+    @classmethod
+    def parse_ride_details(cls, data: dict[str, Any]) -> RideDetails:
+        """Build RideDetails from a :meth:`get_ride_raw` response.
+
+        Raises:
+            EBikeConnectError: If the ride's timestamps are missing or unparseable
+        """
         return RideDetails(
             id=data.get("id", ""),
             name=data.get("title", ""),
-            start_time=self._parse_datetime(data.get("start_time")),
-            end_time=self._parse_datetime(data.get("end_time")),
-            driving_time=self._parse_int(data.get("driving_time"), 0),
-            distance=self._parse_float(data.get("total_distance"), 0.0),
-            avg_speed=self._parse_float(data.get("avg_speed")),
-            max_speed=self._parse_float(data.get("max_speed")),
-            avg_cadence=self._parse_float(data.get("avg_cadence")),
-            calories=self._parse_float(data.get("calories")),
-            altitude_up=self._parse_float(data.get("altitude_up")),
-            altitude_down=self._parse_float(data.get("altitude_down")),
+            start_time=cls._parse_datetime(data.get("start_time")),
+            end_time=cls._parse_datetime(data.get("end_time")),
+            driving_time=cls._parse_int(data.get("driving_time"), 0),
+            distance=cls._parse_float(data.get("total_distance"), 0.0),
+            avg_speed=cls._parse_float(data.get("avg_speed")),
+            max_speed=cls._parse_float(data.get("max_speed")),
+            avg_cadence=cls._parse_float(data.get("avg_cadence")),
+            calories=cls._parse_float(data.get("calories")),
+            # The API has no altitude_up/altitude_down; the real names are these.
+            elevation_gain=cls._parse_float(data.get("elevation_gain")),
+            elevation_loss=cls._parse_float(data.get("elevation_loss")),
             segments=data.get("segments"),
+            operation_time=cls._parse_int(data.get("operation_time"), 0),
+            max_cadence=cls._parse_float(data.get("max_cadence")),
+            elevation_gain_smoothed=cls._smoothed_gain(data.get("portal_altitudes")),
+            assist_pct={
+                cls._parse_int(entry.get("level"), 0): cls._parse_float(entry.get("value"), 0.0)
+                for entry in data.get("significant_assistance_level_percentages") or []
+            },
+            driver_energy_j=cls._parse_float(data.get("total_driver_power")),
+            avg_driver_power=cls._parse_float(data.get("average_driver_power")),
+            pedaling_time_s=cls._parse_int(data.get("driver_power_weight"), 0) or None,
+            driver_share_pct=cls._parse_float(data.get("total_driver_consumption_percentage")),
+            battery_share_pct=cls._parse_float(data.get("total_battery_consumption_percentage")),
         )
+
+    def get_ride_series(self, ride_id: str) -> RideSeries:
+        """Get the 1 Hz sample series for a ride.
+
+        Args:
+            ride_id: The ride identifier
+
+        Returns:
+            RideSeries with speed, altitude and rider-power samples
+
+        Raises:
+            APIError: If the API request fails
+            EBikeConnectError: If not authenticated
+        """
+        return self.parse_ride_series(self.get_ride_raw(ride_id))
+
+    @classmethod
+    def parse_ride_series(cls, data: dict[str, Any]) -> RideSeries:
+        """Build RideSeries from a :meth:`get_ride_raw` response."""
+        return RideSeries(
+            speed_kmh=cls._flatten(data.get("speed"), 2),
+            altitude_m=cls._flatten(data.get("portal_altitudes"), 1),
+            # Named for the drive unit's output but carrying the rider's -- see RideSeries.
+            driver_power_w=cls._flatten(data.get("power_output"), 0),
+        )
+
+    @staticmethod
+    def _flatten(segments: Any, decimals: int) -> list[float | None]:
+        """Concatenate the API's per-segment sample lists into one series.
+
+        Samples are rounded on the way through: these are long series and the extra digits are
+        float dust, not resolution. ``decimals=0`` yields ints so they cache as ``210``, not
+        ``210.0``.
+        """
+        out: list[float | None] = []
+        for segment in segments or []:
+            for value in segment:
+                if value is None:
+                    out.append(None)
+                else:
+                    out.append(round(float(value), decimals) if decimals else round(float(value)))
+        return out
+
+    @staticmethod
+    def _smoothed_gain(segments: Any, threshold: float = 3.0) -> float | None:
+        """Re-accumulate climbing from the 1 Hz altitude series, ignoring wobbles under
+        ``threshold`` metres.
+
+        The API's own ``elevation_gain`` accumulates at roughly a 1 m threshold, which lets
+        barometric noise read as climbing and inflates the total by ~20%.
+        """
+        altitudes = [
+            v for segment in segments or [] for v in segment if v is not None
+        ]
+        if not altitudes:
+            return None
+        total, reference = 0.0, altitudes[0]
+        for value in altitudes:
+            if value - reference >= threshold:
+                total += value - reference
+                reference = value
+            elif value < reference:
+                reference = value
+        return round(total, 2)
 
     def get_trip_details(self, trip_id: str) -> TripDetails:
         """Get detailed information about a specific trip.
@@ -355,15 +453,17 @@ class BoschEBikeClient:
 
     @staticmethod
     def _parse_datetime(value: str | int | None) -> datetime:
-        """Parse datetime string or timestamp (milliseconds). Returns now() on failure."""
-        if not value:
-            return datetime.now()
+        """Parse datetime string or timestamp (milliseconds).
+
+        Raises rather than guessing: a made-up timestamp would silently land the ride on the
+        wrong day in every date-based aggregate.
+        """
         try:
             if isinstance(value, int) or (isinstance(value, str) and value.isdigit()):
                 return datetime.fromtimestamp(int(value) / 1000)
             return datetime.fromisoformat(value.replace("Z", "+00:00"))
-        except (ValueError, OSError, AttributeError):
-            return datetime.now()
+        except (ValueError, OSError, AttributeError) as e:
+            raise EBikeConnectError(f"Unparseable timestamp: {value!r}") from e
 
     @staticmethod
     def _parse_int(value: Any, default: int = 0) -> int:
