@@ -108,11 +108,16 @@ class RideSeries:
     - ``speed_kmh`` peaks at exactly :attr:`RideDetails.max_speed`. Integrated at 1 Hz it runs
       ~5% over ``distance``, so it is a speedometer trace rather than a distance source.
     - ``altitude_m`` is the series :attr:`RideDetails.elevation_gain_smoothed` re-accumulates.
+    - ``position`` is the ride's ``coordinates`` kept one-for-one with the samples, ``None``
+      where GPS had no fix -- unlike the track :meth:`BoschEBikeClient.parse_ride_coordinates`
+      returns, which drops those points and so drifts out of step with the other three. It
+      occasionally runs one sample longer than ``speed_kmh``.
     """
 
     speed_kmh: list[float | None]
     altitude_m: list[float | None]
     driver_power_w: list[float | None]
+    position: list[tuple[float, float] | None] = field(default_factory=list)
 
 
 @dataclass

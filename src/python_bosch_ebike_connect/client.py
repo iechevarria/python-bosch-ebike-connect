@@ -312,6 +312,11 @@ class BoschEBikeClient:
             altitude_m=cls._flatten(data.get("portal_altitudes"), 1),
             # Named for the drive unit's output but carrying the rider's -- see RideSeries.
             driver_power_w=cls._flatten(data.get("power_output"), 0),
+            position=[
+                (float(p[0]), float(p[1])) if p and p[0] is not None and p[1] is not None else None
+                for segment in data.get("coordinates") or []
+                for p in segment
+            ],
         )
 
     @staticmethod
