@@ -56,7 +56,7 @@ with BoschEBikeClient() as client:
     series = fetch_ride_series(client, cache)        # dict[ride_id, RideSeries]
 ```
 
-All three share `sync_rides`, so together they cost one request per new ride. Fields added to the parsers show up for every cached ride with no refetch. Unit helpers `meters_to_miles` and `kmh_to_mph` are also exported.
+All three share `sync_rides`, so together they cost one request per new ride, but each runs its own sync. To sync once and get all three, use `rides, coords, series = parse_rides(sync_rides(client, cache))`. Fields added to the parsers show up for every cached ride with no refetch. Unit helpers `meters_to_miles` and `kmh_to_mph` are also exported.
 
 ## Data Types
 

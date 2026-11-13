@@ -13,7 +13,7 @@ Example:
     ...     print(f"eBike: {ebike.name}")
 """
 
-from .cache import RideCache, fetch_ride_coords, fetch_ride_details, fetch_ride_series, sync_rides
+from .cache import RideCache, fetch_ride_coords, fetch_ride_details, fetch_ride_series, parse_rides, sync_rides
 from .client import BoschEBikeClient
 from .exceptions import APIError, AuthenticationError, EBikeConnectError
 from .types import EBike, RideDetails, RideSeries, TripDetails
@@ -34,6 +34,7 @@ __all__ = [
     "fetch_ride_details",
     "fetch_ride_coords",
     "fetch_ride_series",
+    "parse_rides",
     "sync_rides",
     "KM_TO_MILES",
     "meters_to_miles",
