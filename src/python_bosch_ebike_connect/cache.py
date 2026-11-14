@@ -54,55 +54,90 @@ class RideCache:
         }
 
 
-def iter_activity_headers(client: BoschEBikeClient, page_size: int = 1000) -> Iterator[dict[str, Any]]:
-    """Yield every activity header, newest first, paging back until the API runs out.
+FULL_PAGE_SIZE = 1000
+INCREMENTAL_PAGE_SIZE = 30
+
+
+def iter_activity_pages(
+    client: BoschEBikeClient, page_size: int = FULL_PAGE_SIZE,
+) -> Iterator[list[dict[str, Any]]]:
+    """Yield pages of activity headers, newest first, paging back until the API runs out.
 
     The API is one activity per day and caps a page at ``page_size``, so a single page silently
     drops the oldest days once there are more of them. ``offset`` is exclusive: passing the
     oldest activity's ``start_time`` returns the activities strictly before it.
 
-    Each page is a round trip of around half a second, so the default is large: the API
-    honoured ``max=1000`` when probed (all 228 days of an account in one page, where 200 took
-    three requests). Paging still runs until an empty page, so a server-side cap below
-    ``page_size`` costs a request rather than the oldest days.
+    Each page is a round trip, and its cost grows with its size: 0.13-0.18 s for 14 or 30 days,
+    0.3-1.0 s for all 229 days of an account. The full default is large because the API
+    honoured ``max=1000`` when probed, where 200 took three requests. Paging still runs until an
+    empty page, so a server-side cap below ``page_size`` costs a request rather than the oldest
+    days.
     """
     offset: int | None = None
     while page := client.get_activity_headers(max_results=page_size, offset=offset):
-        yield from page
+        yield page
         oldest = min(int(a["start_time"]) for a in page)
         if offset is not None and oldest >= offset:
             break  # the API ignored the offset; stop rather than loop forever
         offset = oldest
 
 
+def iter_activity_headers(
+    client: BoschEBikeClient, page_size: int = FULL_PAGE_SIZE,
+) -> Iterator[dict[str, Any]]:
+    """Yield every activity header, newest first (see iter_activity_pages)."""
+    for page in iter_activity_pages(client, page_size):
+        yield from page
+
+
 def sync_rides(
     client: BoschEBikeClient,
     cache: RideCache,
-    page_size: int = 1000,
+    page_size: int | None = None,
+    *,
+    incremental: bool = False,
 ) -> dict[str, dict[str, Any]]:
-    """Return the raw response for every ride in the account's full history.
+    """Return the raw response for every ride, fetching only rides missing from the cache.
 
-    Only rides missing from the cache hit the API. A ride that fails to fetch is reported and
-    skipped, so it is retried on the next run; authentication errors are not caught.
+    A full sync (the default) pages through the account's whole history, and the result is
+    exactly the rides the API lists: a ride deleted on the portal drops out even though its
+    file stays in the cache.
+
+    ``incremental=True`` checks the newest pages only, ``INCREMENTAL_PAGE_SIZE`` days at a time,
+    and stops after the first page that lists no uncached ride; every other ride comes from the
+    cache. After a long gap it just pages further back, so no flag is needed to catch up. What
+    it can miss: a ride uploaded late onto a day older than the pages it checked, and a ride
+    deleted on the portal, which stays. A full sync settles both.
+
+    A ride that fails to fetch is reported and skipped, so it is retried on the next run;
+    authentication errors are not caught.
     """
-    raw: dict[str, dict[str, Any]] = {}
-    new_count = 0
-    for activity in iter_activity_headers(client, page_size):
-        for header in activity.get("ride_headers", []):
-            if not (rid := header.get("id")):
-                continue
-            if (data := cache.load_raw(rid)) is None:
-                try:
-                    data = client.get_ride_raw(rid)
-                except APIError as e:
-                    print(f"  Error fetching ride {rid}: {e}")
+    page_size = page_size or (INCREMENTAL_PAGE_SIZE if incremental else FULL_PAGE_SIZE)
+    raw: dict[str, dict[str, Any]] = cache.load_all_raw() if incremental else {}
+    new_count = days_checked = 0
+    for page in iter_activity_pages(client, page_size):
+        days_checked += len(page)
+        uncached = 0
+        for activity in page:
+            for header in activity.get("ride_headers", []):
+                if not (rid := header.get("id")) or rid in raw:
                     continue
-                cache.save_raw(rid, data)
-                new_count += 1
-                if new_count % 25 == 0:
-                    print(f"  Fetched {new_count} rides...")
-            raw[rid] = data
-    print(f"\nTotal: {len(raw)} rides ({new_count} new, {len(raw) - new_count} cached)")
+                if (data := None if incremental else cache.load_raw(rid)) is None:
+                    uncached += 1
+                    try:
+                        data = client.get_ride_raw(rid)
+                    except APIError as e:
+                        print(f"  Error fetching ride {rid}: {e}")
+                        continue
+                    cache.save_raw(rid, data)
+                    new_count += 1
+                    if new_count % 25 == 0:
+                        print(f"  Fetched {new_count} rides...")
+                raw[rid] = data
+        if incremental and not uncached:
+            break
+    scope = f"checked the newest {days_checked} days" if incremental else f"all {days_checked} days"
+    print(f"\nTotal: {len(raw)} rides ({new_count} new, {len(raw) - new_count} cached; {scope})")
     return raw
 
 
@@ -119,7 +154,7 @@ def _parse_each(raw: dict[str, dict[str, Any]], parse: Callable[[dict[str, Any]]
 def fetch_ride_details(
     client: BoschEBikeClient,
     cache: RideCache,
-    page_size: int = 1000,
+    page_size: int = FULL_PAGE_SIZE,
 ) -> list[RideDetails]:
     """Return RideDetails for every ride, caching new fetches."""
     raw = sync_rides(client, cache, page_size)
@@ -129,7 +164,7 @@ def fetch_ride_details(
 def fetch_ride_series(
     client: BoschEBikeClient,
     cache: RideCache,
-    page_size: int = 1000,
+    page_size: int = FULL_PAGE_SIZE,
 ) -> dict[str, RideSeries]:
     """Return the 1 Hz sample series for every ride, caching new fetches."""
     raw = sync_rides(client, cache, page_size)
@@ -139,7 +174,7 @@ def fetch_ride_series(
 def fetch_ride_coords(
     client: BoschEBikeClient,
     cache: RideCache,
-    page_size: int = 1000,
+    page_size: int = FULL_PAGE_SIZE,
 ) -> dict[str, list[tuple[float, float]]]:
     """Return coordinate tracks for every ride that has GPS data, caching new fetches."""
     raw = sync_rides(client, cache, page_size)
